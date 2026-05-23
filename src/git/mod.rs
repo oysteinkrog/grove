@@ -1,11 +1,14 @@
 pub mod gix_backend;
+pub mod status;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::GroveError;
 
 #[allow(unused_imports)]
 pub use gix_backend::GixBackend;
+#[allow(unused_imports)]
+pub use status::{Status, compute};
 
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {
@@ -16,6 +19,7 @@ pub struct WorktreeInfo {
 
 #[derive(Debug)]
 pub struct Worktree {
+    pub path: PathBuf,
     branch: Option<String>,
     head: Option<gix::ObjectId>,
 }

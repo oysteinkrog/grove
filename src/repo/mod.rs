@@ -60,16 +60,16 @@ fn discover_repo_id(global: &ReposManifest) -> Result<String> {
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok());
 
-    if let Some(cwd) = search_path {
-        if let Some(id) = match_work_dir(global, &cwd) {
-            return Ok(id);
-        }
+    if let Some(cwd) = search_path
+        && let Some(id) = match_work_dir(global, &cwd)
+    {
+        return Ok(id);
     }
 
-    if let Some(ref id) = global.default_repo {
-        if global.repos.contains_key(id) {
-            return Ok(id.clone());
-        }
+    if let Some(ref id) = global.default_repo
+        && global.repos.contains_key(id)
+    {
+        return Ok(id.clone());
     }
 
     let available: Vec<&str> = global.repos.keys().map(String::as_str).collect();
@@ -93,7 +93,7 @@ fn match_work_dir(global: &ReposManifest, cwd: &Path) -> Option<String> {
         let work_dir = &entry.work_dir;
         if cwd.starts_with(work_dir) {
             let depth = work_dir.components().count();
-            if best.as_ref().map_or(true, |(d, _)| depth > *d) {
+            if best.as_ref().is_none_or(|(d, _)| depth > *d) {
                 best = Some((depth, id.clone()));
             }
         }
@@ -199,6 +199,20 @@ mod tests {
         }
     }
 
+    struct CwdGuard(std::path::PathBuf);
+
+    impl CwdGuard {
+        fn save() -> Self {
+            Self(std::env::current_dir().unwrap())
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+
     // AC1: cwd inside a registered repo's work_dir → that repo is selected
     #[test]
     #[serial_test::serial]
@@ -214,7 +228,8 @@ mod tests {
         let manifest = make_manifest_with_repos(repos, None);
         write_manifest(&config_dir, &manifest);
 
-        let _cwd_guard = EnvGuard::remove("GROVE_ORIG_CWD");
+        let _env_guard = EnvGuard::remove("GROVE_ORIG_CWD");
+        let _cwd_guard = CwdGuard::save();
         std::env::set_current_dir(&subdir).unwrap();
 
         let ctx = discover(&config_dir, &Cli { repo: None }).unwrap();
@@ -295,6 +310,7 @@ mod tests {
         write_manifest(&config_dir, &manifest);
 
         let _orig_guard = EnvGuard::set("GROVE_ORIG_CWD", subdir_a.to_str().unwrap());
+        let _cwd_guard = CwdGuard::save();
         std::env::set_current_dir(&subdir_b).unwrap();
 
         let ctx = discover(&config_dir, &Cli { repo: None }).unwrap();

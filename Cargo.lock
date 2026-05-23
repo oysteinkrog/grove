@@ -523,13 +523,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc08e0fa1a91ff5f24affeab052f198056645e1de004910bde7b82b50ea5982a"
 dependencies = [
  "bstr",
+ "gix-attributes",
  "gix-command",
  "gix-filter",
  "gix-fs",
  "gix-hash",
  "gix-imara-diff",
+ "gix-index",
  "gix-object",
  "gix-path",
+ "gix-pathspec",
  "gix-tempfile",
  "gix-trace",
  "gix-traverse",
@@ -1176,6 +1179,7 @@ dependencies = [
 name = "grove"
 version = "0.1.0-pre"
 dependencies = [
+ "anyhow",
  "directories",
  "gix",
  "serde",

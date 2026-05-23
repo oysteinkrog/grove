@@ -13,9 +13,12 @@ keywords = ["git", "worktree", "cli", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
+anyhow = "1.0"
 directories = "6.0.0"
 # sha1 + revision for HEAD/ref inspection; worktree-stream brings in gix-worktree for Proxy::into_repo
-gix = { version = "0.83.0", default-features = false, features = ["sha1", "revision", "worktree-stream"] }
+# status enables repo.is_dirty() + repo.status() for untracked-file iteration
+# index required by status for index-read operations
+gix = { version = "0.83.0", default-features = false, features = ["sha1", "revision", "worktree-stream", "status", "index"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"

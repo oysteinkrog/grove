@@ -46,6 +46,7 @@ impl WorktreeManager for GixBackend {
         let repo = open_repo(path)?;
         let repo = repo.to_thread_local();
         Ok(Worktree {
+            path: path.to_path_buf(),
             branch: head_branch(&repo),
             head: head_oid(&repo),
         })
@@ -73,6 +74,8 @@ mod tests {
     use std::process::Command;
 
     use tempfile::TempDir;
+
+    use serial_test::serial;
 
     use super::*;
     use crate::git::WorktreeManager;
@@ -158,6 +161,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn list_matches_git_porcelain() {
         let main_dir = init_repo();
         let wt1 = TempDir::new().unwrap();
@@ -184,6 +188,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn open_returns_branch_and_head() {
         let main_dir = init_repo();
         let wt = TempDir::new().unwrap();
