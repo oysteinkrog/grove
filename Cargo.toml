@@ -1,0 +1,24 @@
+[package]
+name = "grove"
+version = "0.1.0-pre"
+edition = "2024"
+rust-version = "1.89"
+authors = ["Øystein Krog <oystein.krog@gmail.com>"]
+license = "MIT OR Apache-2.0"
+description = "Fast multi-repo git-worktree manager"
+repository = "https://github.com/oysteinkrog/grove"
+homepage = "https://github.com/oysteinkrog/grove"
+readme = "README.md"
+keywords = ["git", "worktree", "cli", "developer-tools"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dist]
+inherits = "release"
+lto = "thin"

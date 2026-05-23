@@ -1,0 +1,11 @@
+/target
+Cargo.lock.bak
+*.swp
+.DS_Store
+.idea/
+.vscode/
+
+# Beads workspace: SQLite DB is local-only; JSONL is the canonical sync source
+/.beads/*.db
+/.beads/*.db-*
+/.beads/*.lock
