@@ -14,10 +14,13 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 directories = "6.0.0"
+# sha1 + revision for HEAD/ref inspection; worktree-stream brings in gix-worktree for Proxy::into_repo
+gix = { version = "0.83.0", default-features = false, features = ["sha1", "revision", "worktree-stream"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["serde", "serde-well-known", "macros", "formatting", "parsing", "local-offset"] }
+which = "8.0.2"
 
 [profile.release]
 lto = "thin"
@@ -30,4 +33,5 @@ lto = "thin"
 
 [dev-dependencies]
 serde_json = "1.0.150"
+serial_test = "3.4.0"
 tempfile = "3.27.0"
