@@ -122,7 +122,10 @@ mod tests {
 
         // Must contain two `;` separators for three tabs
         let sep_count = argv.iter().filter(|a| a.as_str() == ";").count();
-        assert_eq!(sep_count, 2, "expected 2 `;` separators for 3 tabs, got {sep_count}");
+        assert_eq!(
+            sep_count, 2,
+            "expected 2 `;` separators for 3 tabs, got {sep_count}"
+        );
     }
 
     #[test]
@@ -165,7 +168,10 @@ mod tests {
         assert_eq!(argv[0], "wt.exe");
 
         // Both startingDirectory args present
-        let dir_count = argv.iter().filter(|a| a.as_str() == "--startingDirectory").count();
+        let dir_count = argv
+            .iter()
+            .filter(|a| a.as_str() == "--startingDirectory")
+            .count();
         assert_eq!(dir_count, 2);
     }
 }

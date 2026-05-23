@@ -72,7 +72,7 @@ category without flagging it.
 
 ## Code style
 
-- Edition 2024, MSRV 1.80.
+- Edition 2024, MSRV 1.89 (edition 2024 requires 1.85+; we pin 1.89).
 - `#![warn(clippy::pedantic)]` is NOT enabled; default clippy is the bar.
 - No `unwrap()` outside tests. Use `?` and propagate.
 - No comments that restate what the code does. Only WHY when non-obvious.
