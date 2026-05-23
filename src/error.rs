@@ -12,6 +12,9 @@ pub enum GroveError {
 
     #[error("repo '{id}' not found in repos.json")]
     RepoNotFound { id: String },
+
+    #[error("git command failed: {cmd}\n{stderr}")]
+    GitCommandFailed { cmd: String, stderr: String },
 }
 
 pub type Result<T> = std::result::Result<T, GroveError>;

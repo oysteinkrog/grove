@@ -1,4 +1,5 @@
 pub mod gix_backend;
+pub mod shell_backend;
 pub mod status;
 
 use std::path::{Path, PathBuf};
@@ -7,6 +8,8 @@ use crate::error::GroveError;
 
 #[allow(unused_imports)]
 pub use gix_backend::GixBackend;
+#[allow(unused_imports)]
+pub use shell_backend::ShellBackend;
 #[allow(unused_imports)]
 pub use status::{Status, compute};
 
@@ -37,4 +40,21 @@ impl Worktree {
 pub trait WorktreeManager {
     fn list(&self, main: &Path) -> Result<Vec<WorktreeInfo>, GroveError>;
     fn open(&self, path: &Path) -> Result<Worktree, GroveError>;
+}
+
+pub trait WorktreeMutator {
+    fn worktree_add(
+        &self,
+        repo_path: &Path,
+        target: &Path,
+        branch: &str,
+        base: Option<&str>,
+    ) -> Result<(), GroveError>;
+    fn worktree_remove(
+        &self,
+        repo_path: &Path,
+        target: &Path,
+        force: bool,
+    ) -> Result<(), GroveError>;
+    fn worktree_move(&self, repo_path: &Path, old: &Path, new: &Path) -> Result<(), GroveError>;
 }
