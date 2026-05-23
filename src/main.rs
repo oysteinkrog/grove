@@ -1,15 +1,4 @@
-#![allow(dead_code)]
-
-mod cli;
-mod config;
-mod display;
-mod error;
-mod git;
-mod launch;
-mod migrate;
-mod paths;
-mod registry;
-mod repo;
+use grove::migrate;
 
 fn main() {
     let config_dir = directories::BaseDirs::new()
