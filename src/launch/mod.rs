@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+pub mod windows_terminal;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalKind {
     Wezterm,
@@ -29,27 +31,6 @@ pub trait Terminal: Send + Sync {
     fn launch(&self, opts: &LaunchOptions) -> Result<(), LaunchError>;
     fn dry_run(&self, opts: &LaunchOptions) -> Result<String, LaunchError>;
     fn kind(&self) -> TerminalKind;
-}
-
-pub struct WindowsTerminalLauncher;
-
-impl Terminal for WindowsTerminalLauncher {
-    fn launch(&self, _opts: &LaunchOptions) -> Result<(), LaunchError> {
-        unimplemented!("WindowsTerminal launch impl lands in grove-u6c.3")
-    }
-
-    fn dry_run(&self, opts: &LaunchOptions) -> Result<String, LaunchError> {
-        let cwd = opts.cwd.display();
-        let title = opts.title.as_deref().unwrap_or("");
-        let cmd = opts.command.as_deref().unwrap_or("");
-        Ok(format!(
-            "[wt] {title}\n  wt.exe -w 0 nt -d '{cwd}' --title '{title}' wsl.exe -e {cmd}"
-        ))
-    }
-
-    fn kind(&self) -> TerminalKind {
-        TerminalKind::WindowsTerminal
-    }
 }
 
 pub struct WeztermLauncher;
