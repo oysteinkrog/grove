@@ -15,6 +15,15 @@ pub enum GroveError {
 
     #[error("git command failed: {cmd}\n{stderr}")]
     GitCommandFailed { cmd: String, stderr: String },
+
+    #[error("tag '{tag}' already exists at {existing_path}")]
+    DuplicateTag { tag: String, existing_path: PathBuf },
+
+    #[error("invalid tag '{tag}': {reason}")]
+    InvalidTag { tag: String, reason: String },
+
+    #[error("registry error: {msg}")]
+    Registry { msg: String },
 }
 
 pub type Result<T> = std::result::Result<T, GroveError>;

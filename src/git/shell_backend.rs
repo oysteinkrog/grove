@@ -55,6 +55,12 @@ impl Default for ShellBackend {
     }
 }
 
+impl ShellBackend {
+    pub fn fetch(&self, repo_path: &Path, remote: &str) -> Result<(), GroveError> {
+        self.run(repo_path, &["fetch", remote])
+    }
+}
+
 impl WorktreeMutator for ShellBackend {
     fn worktree_add(
         &self,
