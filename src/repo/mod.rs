@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use strsim::jaro_winkler;
+
 use crate::config::global::ReposManifest;
 use crate::config::repo::PerRepoConfig;
 use crate::config::{ResolvedConfig, merge};
@@ -100,6 +102,112 @@ fn match_work_dir(global: &ReposManifest, cwd: &Path) -> Option<String> {
     }
 
     best.map(|(_, id)| id)
+}
+
+/// Result of resolving a tag across repos.
+#[derive(Debug)]
+pub struct TagMatch {
+    pub repo_id: String,
+    pub tag: String,
+}
+
+/// Resolve a tag in the context of the global manifest.
+///
+/// Supports:
+/// - `<repo>/<tag>` qualified form → unambiguous selection
+/// - bare `<tag>` → search all repos; disambiguate via cwd or error
+///
+/// Returns the matching `(repo_id, tag)` or an appropriate error.
+pub fn resolve_tag(global: &ReposManifest, raw_tag: &str) -> Result<TagMatch> {
+    let cwd = std::env::var("GROVE_ORIG_CWD")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+
+    // Qualified form: "repo/tag" — find the slash but not a path separator
+    if let Some((repo_id, tag)) = raw_tag.split_once('/')
+        && !repo_id.is_empty()
+        && !tag.is_empty()
+    {
+        if !global.repos.contains_key(repo_id) {
+            return Err(GroveError::RepoNotFound {
+                id: repo_id.to_string(),
+            });
+        }
+        return Ok(TagMatch {
+            repo_id: repo_id.to_string(),
+            tag: tag.to_string(),
+        });
+    }
+
+    // Unqualified: collect every repo that has this tag
+    let mut matches: Vec<String> = global
+        .repos
+        .keys()
+        .filter(|repo_id| {
+            let entry = &global.repos[*repo_id];
+            let grove_dir = entry.work_dir.join(".grove");
+            Registry::load(&grove_dir)
+                .map(|reg| reg.projects.contains_key(raw_tag))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+
+    match matches.len() {
+        0 => {
+            // No match — build strsim suggestion from all known tags across repos
+            let hint = suggest_tag(global, raw_tag);
+            Err(GroveError::UnknownTag {
+                tag: raw_tag.to_string(),
+                hint,
+            })
+        }
+        1 => Ok(TagMatch {
+            repo_id: matches.remove(0),
+            tag: raw_tag.to_string(),
+        }),
+        _ => {
+            // Ambiguous — try to disambiguate by cwd
+            if let Some(ref cwd_path) = cwd
+                && let Some(cwd_repo) = match_work_dir(global, cwd_path)
+                && matches.contains(&cwd_repo)
+            {
+                return Ok(TagMatch {
+                    repo_id: cwd_repo,
+                    tag: raw_tag.to_string(),
+                });
+            }
+
+            // Still ambiguous — report qualified candidates
+            matches.sort();
+            let candidates: Vec<String> =
+                matches.iter().map(|r| format!("{r}/{raw_tag}")).collect();
+            Err(GroveError::AmbiguousTag {
+                tag: raw_tag.to_string(),
+                candidates,
+            })
+        }
+    }
+}
+
+/// Return the best near-match tag name across all repos using Jaro-Winkler (threshold 0.85).
+fn suggest_tag(global: &ReposManifest, tag: &str) -> Option<String> {
+    let mut best: Option<(f64, String)> = None;
+
+    for entry in global.repos.values() {
+        let grove_dir = entry.work_dir.join(".grove");
+        if let Ok(reg) = Registry::load(&grove_dir) {
+            for candidate in reg.projects.keys() {
+                let score = jaro_winkler(tag, candidate);
+                if score >= 0.85 && best.as_ref().is_none_or(|(s, _)| score > *s) {
+                    best = Some((score, candidate.clone()));
+                }
+            }
+        }
+    }
+
+    best.map(|(_, name)| name)
 }
 
 fn build_context(global: ReposManifest, repo_id: &str) -> Result<RepoContext> {
@@ -369,5 +477,164 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ctx.id, "repo-b");
+    }
+
+    // ── grove-4pe.4: Tag disambiguation tests ───────────────────────────────
+
+    use crate::registry::{Project, Registry};
+    use time::OffsetDateTime;
+
+    fn make_project(path: &str) -> Project {
+        Project {
+            path: PathBuf::from(path),
+            branch: "main".to_string(),
+            base: "origin/main".to_string(),
+            created: OffsetDateTime::from_unix_timestamp(0).unwrap(),
+            issue: None,
+            frozen: false,
+        }
+    }
+
+    fn write_registry_with_tags(work_dir: &Path, tags: &[&str]) {
+        let grove_dir = work_dir.join(".grove");
+        fs::create_dir_all(&grove_dir).unwrap();
+        let mut registry = Registry::default();
+        for tag in tags {
+            registry
+                .insert(
+                    tag.to_string(),
+                    make_project(&format!("{}/{tag}", work_dir.display())),
+                )
+                .unwrap();
+        }
+        registry.save(&grove_dir).unwrap();
+    }
+
+    // AC1: tag in 2 repos, cwd outside both → AmbiguousTag with qualified candidates
+    #[test]
+    #[serial_test::serial]
+    fn disambiguate_ambiguous_tag_outside_both_repos() {
+        let tmp = TempDir::new().unwrap();
+        let work_dir_desktop = tmp.path().join("desktop");
+        let work_dir_ifkb = tmp.path().join("ifkb");
+        let unrelated = tmp.path().join("other");
+        fs::create_dir_all(&unrelated).unwrap();
+
+        write_registry_with_tags(&work_dir_desktop, &["foo"]);
+        write_registry_with_tags(&work_dir_ifkb, &["foo"]);
+
+        let mut repos = BTreeMap::new();
+        repos.insert("desktop".to_string(), make_repo_entry(&work_dir_desktop));
+        repos.insert("ifkb".to_string(), make_repo_entry(&work_dir_ifkb));
+        let global = make_manifest_with_repos(repos, None);
+
+        let _guard = EnvGuard::set("GROVE_ORIG_CWD", unrelated.to_str().unwrap());
+
+        let err = resolve_tag(&global, "foo").unwrap_err();
+        match err {
+            GroveError::AmbiguousTag { tag, candidates } => {
+                assert_eq!(tag, "foo");
+                assert!(
+                    candidates.contains(&"desktop/foo".to_string()),
+                    "candidates should include desktop/foo: {candidates:?}"
+                );
+                assert!(
+                    candidates.contains(&"ifkb/foo".to_string()),
+                    "candidates should include ifkb/foo: {candidates:?}"
+                );
+            }
+            other => panic!("expected AmbiguousTag, got: {other:?}"),
+        }
+    }
+
+    // AC2: tag in 2 repos, cwd inside repo X → X wins
+    #[test]
+    #[serial_test::serial]
+    fn disambiguate_cwd_inside_one_repo_wins() {
+        let tmp = TempDir::new().unwrap();
+        let work_dir_x = tmp.path().join("repo-x");
+        let work_dir_y = tmp.path().join("repo-y");
+        let inside_x = work_dir_x.join("subdir");
+        fs::create_dir_all(&inside_x).unwrap();
+
+        write_registry_with_tags(&work_dir_x, &["foo"]);
+        write_registry_with_tags(&work_dir_y, &["foo"]);
+
+        let mut repos = BTreeMap::new();
+        repos.insert("repo-x".to_string(), make_repo_entry(&work_dir_x));
+        repos.insert("repo-y".to_string(), make_repo_entry(&work_dir_y));
+        let global = make_manifest_with_repos(repos, None);
+
+        let _guard = EnvGuard::set("GROVE_ORIG_CWD", inside_x.to_str().unwrap());
+
+        let result = resolve_tag(&global, "foo").unwrap();
+        assert_eq!(result.repo_id, "repo-x");
+        assert_eq!(result.tag, "foo");
+    }
+
+    // AC3: qualified "repo/tag" → unambiguous selection
+    #[test]
+    #[serial_test::serial]
+    fn disambiguate_qualified_form_selects_correct_repo() {
+        let tmp = TempDir::new().unwrap();
+        let work_dir_desktop = tmp.path().join("desktop");
+        let work_dir_ifkb = tmp.path().join("ifkb");
+
+        write_registry_with_tags(&work_dir_desktop, &["foo"]);
+        write_registry_with_tags(&work_dir_ifkb, &["foo"]);
+
+        let mut repos = BTreeMap::new();
+        repos.insert("desktop".to_string(), make_repo_entry(&work_dir_desktop));
+        repos.insert("ifkb".to_string(), make_repo_entry(&work_dir_ifkb));
+        let global = make_manifest_with_repos(repos, None);
+
+        let _guard = EnvGuard::remove("GROVE_ORIG_CWD");
+
+        let result = resolve_tag(&global, "desktop/foo").unwrap();
+        assert_eq!(result.repo_id, "desktop");
+        assert_eq!(result.tag, "foo");
+    }
+
+    // AC4: unknown tag close to existing tag → strsim hint at threshold 0.85
+    #[test]
+    #[serial_test::serial]
+    fn disambiguate_strsim_hint_for_close_unknown_tag() {
+        let tmp = TempDir::new().unwrap();
+        let work_dir = tmp.path().join("repo-a");
+
+        write_registry_with_tags(&work_dir, &["foo"]);
+
+        let mut repos = BTreeMap::new();
+        repos.insert("repo-a".to_string(), make_repo_entry(&work_dir));
+        let global = make_manifest_with_repos(repos, None);
+
+        let _guard = EnvGuard::remove("GROVE_ORIG_CWD");
+
+        // "baz" is not close to "foo" (score ~0.0) → no hint
+        let err_no_hint = resolve_tag(&global, "baz").unwrap_err();
+        match err_no_hint {
+            GroveError::UnknownTag { tag, hint } => {
+                assert_eq!(tag, "baz");
+                assert!(
+                    hint.is_none(),
+                    "should have no hint for 'baz' vs 'foo': {hint:?}"
+                );
+            }
+            other => panic!("expected UnknownTag, got: {other:?}"),
+        }
+
+        // "fo" is close to "foo" (jaro_winkler ~0.94) → hint present
+        let err_with_hint = resolve_tag(&global, "fo").unwrap_err();
+        match err_with_hint {
+            GroveError::UnknownTag { tag, hint } => {
+                assert_eq!(tag, "fo");
+                assert_eq!(
+                    hint.as_deref(),
+                    Some("foo"),
+                    "should suggest 'foo' for 'fo': {hint:?}"
+                );
+            }
+            other => panic!("expected UnknownTag, got: {other:?}"),
+        }
     }
 }

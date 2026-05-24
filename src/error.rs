@@ -33,6 +33,15 @@ pub enum GroveError {
 
     #[error("repo id '{id}' already exists in repos.json")]
     DuplicateRepoId { id: String },
+
+    #[error("tag '{tag}' is ambiguous; try: {}", candidates.join(", "))]
+    AmbiguousTag {
+        tag: String,
+        candidates: Vec<String>,
+    },
+
+    #[error("unknown tag '{tag}'{}", hint.as_deref().map(|h| format!(" — did you mean '{h}'?")).unwrap_or_default())]
+    UnknownTag { tag: String, hint: Option<String> },
 }
 
 pub type Result<T> = std::result::Result<T, GroveError>;
