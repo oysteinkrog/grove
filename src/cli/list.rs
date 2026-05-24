@@ -299,6 +299,7 @@ mod tests {
             ahead: Some(0),
             behind: Some(0),
             untracked: 0,
+            is_pushed: true,
         }
     }
 
@@ -308,6 +309,7 @@ mod tests {
             ahead: Some(0),
             behind: Some(0),
             untracked: 1,
+            is_pushed: true,
         }
     }
 
@@ -317,6 +319,7 @@ mod tests {
             ahead: Some(n),
             behind: Some(0),
             untracked: 0,
+            is_pushed: n == 0,
         }
     }
 
@@ -401,6 +404,7 @@ mod tests {
                 ahead: Some(0),
                 behind: Some(1),
                 untracked: 0,
+                is_pushed: true,
             })),
             "1 behind"
         );
@@ -410,6 +414,7 @@ mod tests {
                 ahead: Some(2),
                 behind: Some(3),
                 untracked: 0,
+                is_pushed: false,
             })),
             "2 ahead, 3 behind"
         );
