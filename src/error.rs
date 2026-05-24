@@ -24,6 +24,9 @@ pub enum GroveError {
 
     #[error("registry error: {msg}")]
     Registry { msg: String },
+
+    #[error("path is not a git worktree: {path}")]
+    WorktreeInvalid { path: std::path::PathBuf },
 }
 
 pub type Result<T> = std::result::Result<T, GroveError>;

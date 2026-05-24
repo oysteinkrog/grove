@@ -1,6 +1,9 @@
+pub mod adopt;
 pub mod cd;
 pub mod fork;
+pub mod freeze;
 pub mod list;
 pub mod new;
 pub mod path;
+pub mod rename;
 pub mod repo;
