@@ -97,11 +97,11 @@ mod tests {
 
     fn init_bare_and_clone() -> (TempDir, TempDir) {
         let bare = TempDir::new().unwrap();
-        git(bare.path(), &["init", "--bare"]);
+        git(bare.path(), &["init", "--bare", "-b", "main"]);
 
         // Create a temp non-bare repo, commit, push to bare
         let init_tmp = TempDir::new().unwrap();
-        git(init_tmp.path(), &["init"]);
+        git(init_tmp.path(), &["init", "-b", "main"]);
         git(init_tmp.path(), &["config", "user.email", "test@test.com"]);
         git(init_tmp.path(), &["config", "user.name", "Test"]);
         std::fs::write(init_tmp.path().join("README.md"), b"hello").unwrap();
@@ -150,6 +150,9 @@ mod tests {
             ])
             .status()
             .unwrap();
+        // Push the branch up so is_pushed reports true by default.
+        // Tests that want unpushed state add commits after this.
+        git(wt.path(), &["push", "-u", "origin", branch]);
         wt
     }
 
