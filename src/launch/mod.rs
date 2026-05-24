@@ -5,6 +5,9 @@ use thiserror::Error;
 pub mod wezterm;
 pub mod windows_terminal;
 
+#[cfg(test)]
+pub mod mock_terminal;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalKind {
     Wezterm,
