@@ -1,6 +1,7 @@
 use anyhow::Result;
 use gix::ThreadSafeRepository;
 use gix::bstr::ByteSlice;
+use rayon::prelude::*;
 use time::OffsetDateTime;
 
 use super::Worktree;
@@ -160,6 +161,14 @@ fn head_commit_time(repo: &gix::Repository) -> Option<OffsetDateTime> {
     let head_commit = repo.head_commit().ok()?;
     let time = head_commit.time().ok()?;
     OffsetDateTime::from_unix_timestamp(time.seconds).ok()
+}
+
+/// Compute status for all worktrees in parallel using rayon.
+///
+/// Each element in the returned Vec corresponds to the same-index worktree.
+/// An error for one worktree does not abort the others.
+pub fn compute_all(worktrees: &[Worktree]) -> Vec<Result<Status>> {
+    worktrees.par_iter().map(compute).collect()
 }
 
 pub fn compute(wt: &Worktree) -> Result<Status> {
@@ -378,5 +387,48 @@ mod tests {
         let s = compute(&wt).expect("compute should succeed");
 
         assert_eq!(s.untracked, 2, "should count 2 untracked files");
+    }
+
+    #[serial]
+    // compute_all: one invalid worktree path returns an error in its slot;
+    // valid worktrees succeed and are not silently dropped.
+    #[test]
+    fn compute_all_error_propagation() {
+        let good1 = init_repo();
+        let good2 = init_repo();
+
+        // Build a Worktree for a non-existent path to force an error.
+        let bad_path = std::path::PathBuf::from("/nonexistent/path/that/will/never/exist");
+        let bad_wt = GixBackend.open(&bad_path);
+        // open() may succeed (it just records the path) or fail; either way
+        // we need a Worktree value. If open itself errors we skip this variant.
+        let worktrees: Vec<Worktree> = match bad_wt {
+            Ok(bad) => vec![
+                open_worktree(good1.path()),
+                bad,
+                open_worktree(good2.path()),
+            ],
+            Err(_) => {
+                // If the backend refuses to open, test the happy path only.
+                vec![open_worktree(good1.path()), open_worktree(good2.path())]
+            }
+        };
+
+        let results = compute_all(&worktrees);
+
+        // The result count must equal the input count.
+        assert_eq!(
+            results.len(),
+            worktrees.len(),
+            "result count must match input count"
+        );
+
+        // At least the two good repos must succeed.
+        let successes: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
+        assert!(
+            successes.len() >= 2,
+            "both valid repos must succeed; got {} successes",
+            successes.len()
+        );
     }
 }

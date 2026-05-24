@@ -22,6 +22,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
+clap = { version = "4", features = ["derive"] }
 comfy-table = "7.2.2"
 directories = "6.0.0"
 # sha1 + revision for HEAD/ref inspection; worktree-stream brings in gix-worktree for Proxy::into_repo
@@ -29,6 +30,7 @@ directories = "6.0.0"
 # index required by status for index-read operations
 gix = { version = "0.83.0", default-features = false, features = ["sha1", "revision", "worktree-stream", "status", "index"] }
 is-terminal = "0.4.17"
+rayon = "1.10"
 owo-colors = "4.3.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
@@ -36,7 +38,7 @@ strsim = "0.11.1"
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["serde", "serde-well-known", "macros", "formatting", "parsing", "local-offset"] }
 tracing = "0.1.44"
-tracing-subscriber = "0.3.23"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 which = "8.0.2"
 
 [profile.release]
