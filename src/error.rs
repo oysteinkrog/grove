@@ -42,6 +42,18 @@ pub enum GroveError {
 
     #[error("unknown tag '{tag}'{}", hint.as_deref().map(|h| format!(" — did you mean '{h}'?")).unwrap_or_default())]
     UnknownTag { tag: String, hint: Option<String> },
+
+    #[error("worktree '{tag}' has uncommitted changes; use --force to override")]
+    UncommittedChanges { tag: String },
+
+    #[error("worktree '{tag}' has unpushed commits; use --force to override")]
+    UnpushedCommits { tag: String },
+
+    #[error("repo '{id}' has registered projects; pass --force to remove anyway")]
+    RepoNotEmpty { id: String },
+
+    #[error("repo '{id}' not found{}", hint.as_deref().map(|h| format!(" — did you mean '{h}'?")).unwrap_or_default())]
+    RepoIdNotFound { id: String, hint: Option<String> },
 }
 
 pub type Result<T> = std::result::Result<T, GroveError>;

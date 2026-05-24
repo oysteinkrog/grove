@@ -1,5 +1,6 @@
 pub mod adopt;
 pub mod cd;
+pub mod done;
 pub mod fork;
 pub mod freeze;
 pub mod launch;

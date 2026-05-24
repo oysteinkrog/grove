@@ -59,6 +59,19 @@ impl ShellBackend {
     pub fn fetch(&self, repo_path: &Path, remote: &str) -> Result<(), GroveError> {
         self.run(repo_path, &["fetch", remote])
     }
+
+    pub fn branch_delete(&self, repo_path: &Path, branch: &str) -> Result<(), GroveError> {
+        self.run(repo_path, &["branch", "-D", branch])
+    }
+
+    pub fn remote_branch_delete(
+        &self,
+        repo_path: &Path,
+        remote: &str,
+        branch: &str,
+    ) -> Result<(), GroveError> {
+        self.run(repo_path, &["push", remote, "--delete", branch])
+    }
 }
 
 impl WorktreeMutator for ShellBackend {

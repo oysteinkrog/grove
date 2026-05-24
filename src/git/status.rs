@@ -14,6 +14,8 @@ pub struct Status {
     /// Commits in upstream not in local branch; None when no upstream is configured.
     pub behind: Option<u32>,
     pub untracked: u32,
+    /// True when ahead == Some(0), meaning all local commits have been pushed.
+    pub is_pushed: bool,
 }
 
 /// Detailed per-project status, returned by `compute_detail`.
@@ -179,11 +181,13 @@ pub fn compute(wt: &Worktree) -> Result<Status> {
     let untracked = count_untracked(&repo)?;
     let (ahead, behind) = compute_ahead_behind(&repo, wt.branch())?;
 
+    let is_pushed = ahead == Some(0);
     Ok(Status {
         dirty,
         ahead,
         behind,
         untracked,
+        is_pushed,
     })
 }
 
