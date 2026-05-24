@@ -1,6 +1,6 @@
 use crate::error::{GroveError, Result};
-use crate::git::{GixBackend, ShellBackend, WorktreeManager, WorktreeMutator};
 use crate::git::status::compute;
+use crate::git::{GixBackend, ShellBackend, WorktreeManager, WorktreeMutator};
 use crate::repo::RepoContext;
 
 pub struct DoneArgs {
@@ -15,9 +15,7 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
         .registry
         .projects
         .get(&args.tag)
-        .ok_or_else(|| GroveError::WorktreeNotFound(
-            std::path::PathBuf::from(&args.tag),
-        ))?;
+        .ok_or_else(|| GroveError::WorktreeNotFound(std::path::PathBuf::from(&args.tag)))?;
 
     let worktree_path = project.path.clone();
     let branch = project.branch.clone();
@@ -53,11 +51,8 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
 
     if !args.keep_remote {
         // Ignore error: remote may not exist or branch may not be pushed
-        let _ = backend.remote_branch_delete(
-            &cx.resolved.main_repo,
-            &cx.resolved.fork_remote,
-            &branch,
-        );
+        let _ =
+            backend.remote_branch_delete(&cx.resolved.main_repo, &cx.resolved.fork_remote, &branch);
     }
 
     let mut registry = cx.registry.clone();
@@ -109,12 +104,7 @@ mod tests {
         git(init_tmp.path(), &["commit", "-m", "init"]);
         git(
             init_tmp.path(),
-            &[
-                "remote",
-                "add",
-                "origin",
-                bare.path().to_str().unwrap(),
-            ],
+            &["remote", "add", "origin", bare.path().to_str().unwrap()],
         );
         git(init_tmp.path(), &["push", "-u", "origin", "main"]);
 

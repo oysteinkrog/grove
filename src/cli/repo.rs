@@ -532,7 +532,10 @@ mod tests {
         let json = serde_json::to_string_pretty(&json_out).unwrap();
         assert!(json.contains("repo-a"), "repo-a should appear in JSON list");
         assert!(json.contains("repo-b"), "repo-b should appear in JSON list");
-        assert!(json.contains("\"is_default\": true"), "repo-a should be marked as default");
+        assert!(
+            json.contains("\"is_default\": true"),
+            "repo-a should be marked as default"
+        );
     }
 
     // Test 2: repo show <id> → prints entry + project count
@@ -572,11 +575,20 @@ mod tests {
         manifest.save(&config_dir).unwrap();
 
         let result = run_remove_with_config(&mut manifest, &config_dir, "repo-b", false);
-        assert!(result.is_ok(), "remove should succeed with no projects: {result:?}");
-        assert!(!manifest.repos.contains_key("repo-b"), "repo-b should be removed");
+        assert!(
+            result.is_ok(),
+            "remove should succeed with no projects: {result:?}"
+        );
+        assert!(
+            !manifest.repos.contains_key("repo-b"),
+            "repo-b should be removed"
+        );
 
         let reloaded = ReposManifest::load(&config_dir).unwrap();
-        assert!(!reloaded.repos.contains_key("repo-b"), "repo-b should be gone from disk");
+        assert!(
+            !reloaded.repos.contains_key("repo-b"),
+            "repo-b should be gone from disk"
+        );
     }
 
     // Test 4: repo remove <id> with projects → errors RepoNotEmpty unless --force
@@ -609,8 +621,14 @@ mod tests {
 
         // With --force: should succeed
         let result_forced = run_remove_with_config(&mut manifest, &config_dir, "repo-a", true);
-        assert!(result_forced.is_ok(), "force remove should succeed: {result_forced:?}");
-        assert!(!manifest.repos.contains_key("repo-a"), "repo-a should be removed after force");
+        assert!(
+            result_forced.is_ok(),
+            "force remove should succeed: {result_forced:?}"
+        );
+        assert!(
+            !manifest.repos.contains_key("repo-a"),
+            "repo-a should be removed after force"
+        );
     }
 
     // Test 5: repo default <id> → updates default_repo in manifest
