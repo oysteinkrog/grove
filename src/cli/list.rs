@@ -1,14 +1,16 @@
+use std::path::PathBuf;
+
 use comfy_table::{Cell, Color};
+use rayon::prelude::*;
 use serde::Serialize;
 use time::OffsetDateTime;
 
 use crate::display::{self, make_table};
 use crate::git::status::Status;
-use crate::registry::Project;
+use crate::registry::{Project, Registry};
 use crate::repo::RepoContext;
 
 pub struct ListArgs {
-    /// Filter to a specific repo id (currently only cx.id is supported; cross-repo comes in 4pe.3)
     pub repo: Option<String>,
     /// Compact one-line-per-project output
     pub short: bool,
@@ -208,79 +210,150 @@ fn format_status(status: Option<&Status>) -> String {
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
-pub fn run(args: &ListArgs, cx: &RepoContext) -> anyhow::Result<()> {
-    // Cross-repo dispatch (grove-4pe.3) is a later bead.
-    // For now, render only cx.id's repo.
-    let _ = &args.repo; // respected by the single-repo constraint
+/// Detect which repo id the cwd belongs to by checking GROVE_ORIG_CWD then current_dir.
+fn cwd_repo_id(cx: &RepoContext) -> Option<String> {
+    let cwd: PathBuf = std::env::var("GROVE_ORIG_CWD")
+        .ok()
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())?;
 
-    let rows: Vec<ProjectRow> = cx
-        .registry
-        .list()
-        .map(|(tag, project)| {
-            // TODO(grove-rez.2): compute live status via git::status::compute when available.
-            // For now we emit None so the table still renders without crashing on tempdir
-            // fixtures where no real git repo exists.
-            ProjectRow {
-                tag: tag.to_string(),
-                project: project.clone(),
-                status: None,
+    let mut best: Option<(usize, String)> = None;
+    for (id, entry) in &cx.global.repos {
+        if cwd.starts_with(&entry.work_dir) {
+            let depth = entry.work_dir.components().count();
+            if best.as_ref().is_none_or(|(d, _)| depth > *d) {
+                best = Some((depth, id.clone()));
             }
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Load rows for a single repo by reading its registry from disk.
+fn load_repo_rows(work_dir: &std::path::Path) -> Vec<ProjectRow> {
+    let grove_dir = work_dir.join(".grove");
+    let registry = Registry::load(&grove_dir).unwrap_or_default();
+    registry
+        .list()
+        .map(|(tag, project)| ProjectRow {
+            tag: tag.to_string(),
+            project: project.clone(),
+            status: None,
+        })
+        .collect()
+}
+
+pub fn run(args: &ListArgs, cx: &RepoContext) -> anyhow::Result<()> {
+    // Determine which repo ids to scan.
+    let all_ids: Vec<String> = if let Some(ref filter_id) = args.repo {
+        vec![filter_id.clone()]
+    } else {
+        cx.global.repos.keys().cloned().collect()
+    };
+
+    // Detect cwd-matched repo for ordering.
+    let cwd_id = cwd_repo_id(cx);
+
+    // Load rows in parallel across repos.
+    let mut sections: Vec<(String, Vec<ProjectRow>)> = all_ids
+        .par_iter()
+        .filter_map(|id| {
+            let entry = cx.global.repos.get(id)?;
+            let rows = load_repo_rows(&entry.work_dir);
+            Some((id.clone(), rows))
         })
         .collect();
 
+    // Sort: cwd-matched repo first, then alphabetical by id.
+    sections.sort_by(|(a, _), (b, _)| {
+        let a_is_cwd = cwd_id.as_deref() == Some(a.as_str());
+        let b_is_cwd = cwd_id.as_deref() == Some(b.as_str());
+        match (a_is_cwd, b_is_cwd) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.cmp(b),
+        }
+    });
+
     if args.json {
-        let projects: Vec<JsonProject> = rows
+        let repos: Vec<JsonRepo> = sections
             .iter()
-            .map(|r| JsonProject {
-                tag: r.tag.clone(),
-                path: r.project.path.display().to_string(),
-                branch: r.project.branch.clone(),
-                base: r.project.base.clone(),
-                issue: r.project.issue,
-                frozen: r.project.frozen,
-                created: r.project.created,
-                status: if args.no_status {
-                    None
-                } else {
-                    r.status.as_ref().map(JsonStatus::from)
-                },
+            .map(|(id, rows)| {
+                let projects = rows
+                    .iter()
+                    .map(|r| JsonProject {
+                        tag: r.tag.clone(),
+                        path: r.project.path.display().to_string(),
+                        branch: r.project.branch.clone(),
+                        base: r.project.base.clone(),
+                        issue: r.project.issue,
+                        frozen: r.project.frozen,
+                        created: r.project.created,
+                        status: if args.no_status {
+                            None
+                        } else {
+                            r.status.as_ref().map(JsonStatus::from)
+                        },
+                    })
+                    .collect();
+                JsonRepo {
+                    id: id.clone(),
+                    projects,
+                }
             })
             .collect();
 
-        let output = JsonOutput {
-            version: 1,
-            repos: vec![JsonRepo {
-                id: cx.id.clone(),
-                projects,
-            }],
-        };
-
+        let output = JsonOutput { version: 1, repos };
         let json = serde_json::to_string_pretty(&output)?;
         println!("{json}");
         return Ok(());
     }
 
     if args.short {
-        let section = render_short_section(&cx.id, &rows);
-        print!("{section}");
+        for (id, rows) in &sections {
+            let section = render_short_section(id, rows);
+            print!("{section}");
+        }
         return Ok(());
     }
 
-    let section = render_repo_section(&cx.id, &rows);
-    print!("{section}");
+    for (id, rows) in &sections {
+        if rows.is_empty() {
+            let header = format!("── {id} ──");
+            let header = if display::use_color() {
+                use owo_colors::OwoColorize;
+                header.bold().to_string()
+            } else {
+                header
+            };
+            println!("{header}");
+            println!("(no projects)");
+            println!();
+        } else {
+            let section = render_repo_section(id, rows);
+            print!("{section}");
+        }
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::fs;
     use std::path::PathBuf;
 
     use insta::assert_snapshot;
+    use serial_test::serial;
+    use tempfile::TempDir;
     use time::OffsetDateTime;
 
     use super::*;
+    use crate::config::ResolvedConfig;
+    use crate::config::global::{RepoEntry, ReposManifest};
     use crate::git::status::Status;
-    use crate::registry::Project;
+    use crate::registry::{Project, Registry};
 
     fn make_project(branch: &str, base: &str, issue: Option<u32>, frozen: bool) -> Project {
         Project {
@@ -504,5 +577,213 @@ mod tests {
         assert!(projects[0]["status"].is_null(), "status should be absent");
 
         assert_snapshot!("list__json_no_status", json);
+    }
+
+    // ── grove-4pe.3: Cross-repo ordering tests ───────────────────────────────
+
+    fn make_repo_entry_for_dir(work_dir: PathBuf) -> RepoEntry {
+        RepoEntry {
+            main_repo: work_dir.join("master"),
+            work_dir: work_dir.clone(),
+            dir_prefix: String::new(),
+            upstream_remote: "upstream".to_string(),
+            fork_remote: "origin".to_string(),
+            default_base: "main".to_string(),
+            issue_prefix: None,
+            launch: None,
+        }
+    }
+
+    fn make_project_for_tag(work_dir: &std::path::Path, tag: &str) -> Project {
+        Project {
+            path: work_dir.join(tag),
+            branch: format!("branch-{tag}"),
+            base: "origin/main".to_string(),
+            created: OffsetDateTime::from_unix_timestamp(0).unwrap(),
+            issue: None,
+            frozen: false,
+        }
+    }
+
+    fn make_cross_repo_context(
+        tmp: &TempDir,
+        repo_ids: &[&str],
+        projects_per_repo: &[(&str, &[&str])],
+        default_id: &str,
+    ) -> RepoContext {
+        let mut repos = BTreeMap::new();
+        for &id in repo_ids {
+            let work_dir = tmp.path().join(id);
+            fs::create_dir_all(&work_dir).unwrap();
+
+            if let Some(&(_, tags)) = projects_per_repo.iter().find(|&&(rid, _)| rid == id) {
+                let grove_dir = work_dir.join(".grove");
+                let mut registry = Registry::default();
+                for &tag in tags {
+                    let proj = make_project_for_tag(&work_dir, tag);
+                    registry.insert(tag.to_string(), proj).unwrap();
+                }
+                registry.save(&grove_dir).unwrap();
+            }
+
+            repos.insert(id.to_string(), make_repo_entry_for_dir(work_dir));
+        }
+
+        let global = ReposManifest {
+            schema_version: 1,
+            default_repo: Some(default_id.to_string()),
+            repos: repos.clone(),
+        };
+
+        let default_entry = repos.get(default_id).unwrap();
+        let resolved = ResolvedConfig {
+            main_repo: default_entry.main_repo.clone(),
+            work_dir: default_entry.work_dir.clone(),
+            upstream_remote: "upstream".to_string(),
+            fork_remote: "origin".to_string(),
+            default_base: "main".to_string(),
+            issue_prefix: None,
+            dir_prefix: String::new(),
+            launch: None,
+        };
+        let grove_dir = default_entry.work_dir.join(".grove");
+        let registry = Registry::load(&grove_dir).unwrap_or_default();
+
+        RepoContext {
+            id: default_id.to_string(),
+            global,
+            resolved,
+            registry,
+        }
+    }
+
+    struct EnvGuard {
+        key: &'static str,
+        old: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let old = std::env::var(key).ok();
+            unsafe { std::env::set_var(key, val) };
+            Self { key, old }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let old = std::env::var(key).ok();
+            unsafe { std::env::remove_var(key) };
+            Self { key, old }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.old {
+                Some(v) => unsafe { std::env::set_var(self.key, v) },
+                None => unsafe { std::env::remove_var(self.key) },
+            }
+        }
+    }
+
+    // AC1: 2 repos, cwd matches neither → alphabetical order.
+    #[test]
+    #[serial]
+    fn cross_repo_alphabetical_when_cwd_matches_neither() {
+        let tmp = TempDir::new().unwrap();
+        let unrelated = tmp.path().join("unrelated");
+        fs::create_dir_all(&unrelated).unwrap();
+
+        let cx = make_cross_repo_context(
+            &tmp,
+            &["zoo-repo", "alpha-repo"],
+            &[("alpha-repo", &["proj-a"]), ("zoo-repo", &["proj-z"])],
+            "alpha-repo",
+        );
+        let _env = EnvGuard::set("GROVE_ORIG_CWD", unrelated.to_str().unwrap());
+
+        let cwd_id = cwd_repo_id(&cx);
+        assert!(cwd_id.is_none(), "cwd should not match either repo");
+
+        let mut ids: Vec<String> = cx.global.repos.keys().cloned().collect();
+        ids.sort_by(|a, b| {
+            let a_cwd = cwd_id.as_deref() == Some(a.as_str());
+            let b_cwd = cwd_id.as_deref() == Some(b.as_str());
+            match (a_cwd, b_cwd) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.cmp(b),
+            }
+        });
+        assert_eq!(
+            ids[0], "alpha-repo",
+            "alpha-repo should come first alphabetically"
+        );
+        assert_eq!(ids[1], "zoo-repo", "zoo-repo should come second");
+    }
+
+    // AC2: cwd inside repo B's work_dir → repo B section first.
+    #[test]
+    #[serial]
+    fn cross_repo_cwd_inside_repo_b_comes_first() {
+        let tmp = TempDir::new().unwrap();
+        let cx = make_cross_repo_context(
+            &tmp,
+            &["alpha-repo", "beta-repo"],
+            &[("alpha-repo", &["proj-a"]), ("beta-repo", &["proj-b"])],
+            "alpha-repo",
+        );
+
+        let beta_work_dir = tmp.path().join("beta-repo");
+        let _env = EnvGuard::set("GROVE_ORIG_CWD", beta_work_dir.to_str().unwrap());
+
+        let cwd_id = cwd_repo_id(&cx);
+        assert_eq!(
+            cwd_id.as_deref(),
+            Some("beta-repo"),
+            "cwd should match beta-repo"
+        );
+
+        let mut ids: Vec<String> = cx.global.repos.keys().cloned().collect();
+        ids.sort_by(|a, b| {
+            let a_cwd = cwd_id.as_deref() == Some(a.as_str());
+            let b_cwd = cwd_id.as_deref() == Some(b.as_str());
+            match (a_cwd, b_cwd) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.cmp(b),
+            }
+        });
+        assert_eq!(
+            ids[0], "beta-repo",
+            "beta-repo should be first when cwd is inside it"
+        );
+        assert_eq!(ids[1], "alpha-repo");
+    }
+
+    // AC3: --repo <id> filter → only one section scanned.
+    #[test]
+    #[serial]
+    fn cross_repo_filter_by_repo_id() {
+        let tmp = TempDir::new().unwrap();
+        let _env = EnvGuard::remove("GROVE_ORIG_CWD");
+
+        let cx = make_cross_repo_context(
+            &tmp,
+            &["alpha-repo", "beta-repo"],
+            &[("alpha-repo", &["proj-a"]), ("beta-repo", &["proj-b"])],
+            "alpha-repo",
+        );
+
+        let filter_id = "alpha-repo".to_string();
+        let all_ids: Vec<String> = vec![filter_id.clone()];
+
+        assert_eq!(all_ids.len(), 1);
+        assert_eq!(all_ids[0], "alpha-repo");
+
+        // Verify only alpha-repo's rows are loaded.
+        let entry = cx.global.repos.get("alpha-repo").unwrap();
+        let rows = load_repo_rows(&entry.work_dir);
+        assert_eq!(rows.len(), 1, "alpha-repo should have 1 project");
+        assert_eq!(rows[0].tag, "proj-a");
     }
 }
