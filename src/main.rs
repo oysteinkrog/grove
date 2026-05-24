@@ -1,7 +1,7 @@
-use clap::Parser;
 use is_terminal::IsTerminal;
 use tracing_subscriber::EnvFilter;
 
+use grove::cli::{Cli, Command};
 use grove::migrate;
 
 // ── Tracing filter ────────────────────────────────────────────────────────────
@@ -20,29 +20,11 @@ pub fn build_filter(v_count: u8) -> EnvFilter {
         .unwrap_or_else(|_| EnvFilter::new(format!("grove={default_level}")))
 }
 
-// ── CLI skeleton (global args only) ──────────────────────────────────────────
-
-#[derive(Parser, Debug)]
-#[command(
-    name = "grove",
-    version,
-    about = "Fast multi-repo git-worktree manager"
-)]
-struct Cli {
-    /// Increase log verbosity (-v = INFO, -vv = DEBUG, -vvv = TRACE)
-    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
-    verbose: u8,
-
-    #[command(subcommand)]
-    command: Option<Command>,
-}
-
-#[derive(clap::Subcommand, Debug)]
-enum Command {}
-
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 fn main() {
+    use clap::Parser;
+
     // GROVE_DEBUG compat: map it to grove=debug before subscriber init.
     if std::env::var("GROVE_DEBUG").is_ok() {
         unsafe { std::env::set_var("RUST_LOG", "grove=debug") };
@@ -57,6 +39,11 @@ fn main() {
         .with_writer(std::io::stderr)
         .with_ansi(use_ansi)
         .init();
+
+    if let Some(Command::Completions { shell }) = cli.command {
+        grove::cli::completions::run(shell);
+        return;
+    }
 
     let config_dir = directories::BaseDirs::new()
         .map(|b| b.config_dir().join("grove"))
