@@ -1,5 +1,7 @@
 use anyhow::Result;
 use gix::ThreadSafeRepository;
+use gix::bstr::ByteSlice;
+use time::OffsetDateTime;
 
 use super::Worktree;
 
@@ -11,6 +13,153 @@ pub struct Status {
     /// Commits in upstream not in local branch; None when no upstream is configured.
     pub behind: Option<u32>,
     pub untracked: u32,
+}
+
+/// Detailed per-project status, returned by `compute_detail`.
+#[derive(Debug, Clone)]
+pub struct StatusDetail {
+    pub head_branch: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: Option<u32>,
+    pub behind: Option<u32>,
+    pub dirty: bool,
+    /// Changed/untracked file paths, capped at 10 for display; total count in `dirty_files_total`.
+    pub dirty_files: Vec<String>,
+    pub dirty_files_total: usize,
+    /// Timestamp of the HEAD commit; None if repo has no commits.
+    pub last_commit_time: Option<OffsetDateTime>,
+}
+
+/// Compute detailed status for a single worktree. Keeps `compute()` intact.
+pub fn compute_detail(wt: &Worktree) -> Result<StatusDetail> {
+    let ts_repo = ThreadSafeRepository::open(&wt.path)?;
+    let repo = ts_repo.to_thread_local();
+
+    let head_branch = head_branch_name(&repo);
+    let (upstream, ahead, behind) = upstream_info(&repo, head_branch.as_deref())?;
+    let (dirty, dirty_files, dirty_files_total) = collect_dirty_files(&repo)?;
+    let last_commit_time = head_commit_time(&repo);
+
+    Ok(StatusDetail {
+        head_branch,
+        upstream,
+        ahead,
+        behind,
+        dirty,
+        dirty_files,
+        dirty_files_total,
+        last_commit_time,
+    })
+}
+
+fn head_branch_name(repo: &gix::Repository) -> Option<String> {
+    let head = repo.head().ok()?;
+    let branch = head.referent_name()?;
+    let name = branch.as_bstr().to_str().ok()?;
+    let short = name.strip_prefix("refs/heads/").unwrap_or(name);
+    Some(short.to_string())
+}
+
+fn upstream_info(
+    repo: &gix::Repository,
+    branch: Option<&str>,
+) -> Result<(Option<String>, Option<u32>, Option<u32>)> {
+    let branch = match branch {
+        Some(b) => b,
+        None => return Ok((None, None, None)),
+    };
+
+    let config = repo.config_snapshot();
+    let remote_name = config
+        .string(format!("branch.{branch}.remote").as_str())
+        .map(|v| v.to_string());
+    let merge_ref = config
+        .string(format!("branch.{branch}.merge").as_str())
+        .map(|v| v.to_string());
+
+    let (remote_name, merge_ref) = match (remote_name, merge_ref) {
+        (Some(r), Some(m)) => (r, m),
+        _ => return Ok((None, None, None)),
+    };
+
+    let upstream_branch = merge_ref
+        .strip_prefix("refs/heads/")
+        .unwrap_or(merge_ref.as_str());
+    let upstream_ref = format!("refs/remotes/{remote_name}/{upstream_branch}");
+    let upstream_label = format!("{remote_name}/{upstream_branch}");
+
+    let local_oid = match repo.try_find_reference(&format!("refs/heads/{branch}"))? {
+        Some(r) => r.id().detach(),
+        None => return Ok((Some(upstream_label), None, None)),
+    };
+    let upstream_oid = match repo.try_find_reference(&upstream_ref)? {
+        Some(r) => r.id().detach(),
+        None => return Ok((Some(upstream_label), None, None)),
+    };
+
+    let ahead = repo
+        .rev_walk([local_oid])
+        .with_boundary([upstream_oid])
+        .all()?
+        .count() as u32;
+    let behind = repo
+        .rev_walk([upstream_oid])
+        .with_boundary([local_oid])
+        .all()?
+        .count() as u32;
+
+    Ok((Some(upstream_label), Some(ahead), Some(behind)))
+}
+
+fn collect_dirty_files(repo: &gix::Repository) -> Result<(bool, Vec<String>, usize)> {
+    let mut paths: Vec<String> = Vec::new();
+
+    let platform = repo
+        .status(gix::progress::Discard)?
+        .untracked_files(gix::status::UntrackedFiles::Files);
+
+    for item in platform.into_iter(None)? {
+        match item? {
+            gix::status::Item::IndexWorktree(
+                gix::status::index_worktree::Item::DirectoryContents { entry, .. },
+            ) if matches!(entry.status, gix::dir::entry::Status::Untracked) => {
+                paths.push(entry.rela_path.to_string());
+            }
+            gix::status::Item::IndexWorktree(ref itm) => {
+                use gix::status::index_worktree::Item;
+                let path = match itm {
+                    Item::Modification { rela_path, .. } => {
+                        Some(rela_path.to_str_lossy().into_owned())
+                    }
+                    Item::Rewrite {
+                        source,
+                        dirwalk_entry,
+                        ..
+                    } => Some(format!(
+                        "{} -> {}",
+                        source.rela_path(),
+                        dirwalk_entry.rela_path.to_str_lossy()
+                    )),
+                    _ => None,
+                };
+                if let Some(p) = path {
+                    paths.push(p);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let total = paths.len();
+    let dirty = total > 0 || repo.is_dirty()?;
+    paths.truncate(10);
+    Ok((dirty, paths, total))
+}
+
+fn head_commit_time(repo: &gix::Repository) -> Option<OffsetDateTime> {
+    let head_commit = repo.head_commit().ok()?;
+    let time = head_commit.time().ok()?;
+    OffsetDateTime::from_unix_timestamp(time.seconds).ok()
 }
 
 pub fn compute(wt: &Worktree) -> Result<Status> {
@@ -102,9 +251,8 @@ fn compute_ahead_behind(
 mod tests {
     use std::process::Command;
 
-    use tempfile::TempDir;
-
     use serial_test::serial;
+    use tempfile::TempDir;
 
     use super::*;
     use crate::git::{GixBackend, WorktreeManager};

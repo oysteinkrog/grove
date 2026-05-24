@@ -11,7 +11,7 @@ pub use gix_backend::GixBackend;
 #[allow(unused_imports)]
 pub use shell_backend::ShellBackend;
 #[allow(unused_imports)]
-pub use status::{Status, compute};
+pub use status::{Status, StatusDetail, compute, compute_detail};
 
 #[derive(Debug, Clone)]
 pub struct WorktreeInfo {

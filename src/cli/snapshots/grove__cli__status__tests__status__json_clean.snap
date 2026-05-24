@@ -1,0 +1,18 @@
+---
+source: src/cli/status.rs
+assertion_line: 317
+expression: json
+---
+{
+  "version": 1,
+  "tag": "myfeature",
+  "path": "/c/work/test/myfeature",
+  "head_branch": "main",
+  "upstream": "origin/main",
+  "ahead": 0,
+  "behind": 0,
+  "dirty": false,
+  "dirty_files": [],
+  "dirty_files_total": 0,
+  "last_commit_time": "1970-01-12T13:46:40Z"
+}

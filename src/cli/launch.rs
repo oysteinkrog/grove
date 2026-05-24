@@ -55,10 +55,10 @@ pub fn run_with_terminal_factory(
 
     // BTreeMap iteration is already sorted alphabetically by tag.
     for (tag, project) in &cx.registry.projects {
-        if let Some(ref only) = only_tags {
-            if !only.contains(tag.as_str()) {
-                continue;
-            }
+        if let Some(ref only) = only_tags
+            && !only.contains(tag.as_str())
+        {
+            continue;
         }
 
         if project.frozen {
