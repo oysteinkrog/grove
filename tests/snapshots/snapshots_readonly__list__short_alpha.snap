@@ -1,0 +1,7 @@
+---
+source: tests/snapshots_readonly.rs
+expression: output
+---
+alpha-repo/clean  ALPHA-1-clean  clean
+alpha-repo/dirty  ALPHA-2-dirty  dirty
+alpha-repo/ahead  ALPHA-3-ahead  3 ahead

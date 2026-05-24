@@ -1,0 +1,11 @@
+---
+source: tests/snapshots_readonly.rs
+expression: output
+---
+── beta-repo ──
+┌─────────────────┬───────────────┬─────────────┬──────────┬───────┐
+│ Tag             ┆ Branch        ┆ Base        ┆ Status   ┆ Issue │
+╞═════════════════╪═══════════════╪═════════════╪══════════╪═══════╡
+│ frozen (frozen) ┆ BETA-4-frozen ┆ origin/main ┆ clean    ┆       │
+│ behind          ┆ BETA-5-behind ┆ origin/main ┆ 2 behind ┆       │
+└─────────────────┴───────────────┴─────────────┴──────────┴───────┘

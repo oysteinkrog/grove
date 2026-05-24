@@ -1,0 +1,87 @@
+---
+source: tests/snapshots_readonly.rs
+expression: json
+---
+{
+  "version": 1,
+  "repos": [
+    {
+      "id": "alpha-repo",
+      "projects": [
+        {
+          "tag": "clean",
+          "path": "/c/work/alpha/clean",
+          "branch": "ALPHA-1-clean",
+          "base": "origin/main",
+          "issue": 1,
+          "frozen": false,
+          "created": "2024-01-15T12:00:00Z",
+          "status": {
+            "dirty": false,
+            "ahead": 0,
+            "behind": 0,
+            "untracked": 0
+          }
+        },
+        {
+          "tag": "dirty",
+          "path": "/c/work/alpha/dirty",
+          "branch": "ALPHA-2-dirty",
+          "base": "origin/main",
+          "issue": 2,
+          "frozen": false,
+          "created": "2024-01-15T12:00:00Z",
+          "status": {
+            "dirty": true,
+            "ahead": 0,
+            "behind": 0,
+            "untracked": 2
+          }
+        },
+        {
+          "tag": "ahead",
+          "path": "/c/work/alpha/ahead",
+          "branch": "ALPHA-3-ahead",
+          "base": "origin/main",
+          "issue": 3,
+          "frozen": false,
+          "created": "2024-01-15T12:00:00Z",
+          "status": {
+            "dirty": false,
+            "ahead": 3,
+            "behind": 0,
+            "untracked": 0
+          }
+        },
+        {
+          "tag": "frozen",
+          "path": "/c/work/beta/frozen",
+          "branch": "BETA-4-frozen",
+          "base": "origin/main",
+          "frozen": true,
+          "created": "2024-01-15T12:00:00Z",
+          "status": {
+            "dirty": false,
+            "ahead": 0,
+            "behind": 0,
+            "untracked": 0
+          }
+        },
+        {
+          "tag": "behind",
+          "path": "/c/work/beta/behind",
+          "branch": "BETA-5-behind",
+          "base": "origin/main",
+          "frozen": false,
+          "created": "2024-01-15T12:00:00Z",
+          "status": {
+            "dirty": false,
+            "ahead": 0,
+            "behind": 2,
+            "untracked": 0
+          }
+        }
+      ]
+    }
+  ]
+}

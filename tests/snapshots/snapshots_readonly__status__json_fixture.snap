@@ -1,0 +1,17 @@
+---
+source: tests/snapshots_readonly.rs
+expression: json
+---
+{
+  "version": 1,
+  "tag": "clean",
+  "path": "/c/work/alpha/clean",
+  "head_branch": "ALPHA-1-clean",
+  "upstream": "origin/ALPHA-1-clean",
+  "ahead": 0,
+  "behind": 0,
+  "dirty": false,
+  "dirty_files": [],
+  "dirty_files_total": 0,
+  "last_commit_time": "2024-01-15T12:00:00Z"
+}
