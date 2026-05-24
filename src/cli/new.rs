@@ -80,7 +80,7 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     Ok(())
 }
 
-fn validate_tag(tag: &str) -> Result<()> {
+pub fn validate_tag(tag: &str) -> Result<()> {
     if tag.is_empty() || tag.len() > 40 {
         return Err(GroveError::InvalidTag {
             tag: tag.to_string(),
