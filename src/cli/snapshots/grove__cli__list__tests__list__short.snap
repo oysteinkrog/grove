@@ -1,0 +1,8 @@
+---
+source: src/cli/list.rs
+assertion_line: 418
+expression: output
+---
+test-repo/alpha  PROJ-1-alpha  clean
+test-repo/beta   PROJ-2-beta   dirty
+test-repo/gamma  PROJ-3-gamma  3 ahead

@@ -1,4 +1,6 @@
 use comfy_table::{Cell, Color};
+use serde::Serialize;
+use time::OffsetDateTime;
 
 use crate::display::{self, make_table};
 use crate::git::status::Status;
@@ -8,6 +10,12 @@ use crate::repo::RepoContext;
 pub struct ListArgs {
     /// Filter to a specific repo id (currently only cx.id is supported; cross-repo comes in 4pe.3)
     pub repo: Option<String>,
+    /// Compact one-line-per-project output
+    pub short: bool,
+    /// Output as JSON
+    pub json: bool,
+    /// Skip git status scans in JSON output (fast path)
+    pub no_status: bool,
 }
 
 pub struct ProjectRow {
@@ -15,6 +23,56 @@ pub struct ProjectRow {
     pub project: Project,
     pub status: Option<Status>,
 }
+
+// ── JSON output structs ──────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct JsonOutput {
+    pub version: u32,
+    pub repos: Vec<JsonRepo>,
+}
+
+#[derive(Serialize)]
+pub struct JsonRepo {
+    pub id: String,
+    pub projects: Vec<JsonProject>,
+}
+
+#[derive(Serialize)]
+pub struct JsonProject {
+    pub tag: String,
+    pub path: String,
+    pub branch: String,
+    pub base: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issue: Option<u32>,
+    pub frozen: bool,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created: OffsetDateTime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<JsonStatus>,
+}
+
+#[derive(Serialize)]
+pub struct JsonStatus {
+    pub dirty: bool,
+    pub ahead: Option<u32>,
+    pub behind: Option<u32>,
+    pub untracked: u32,
+}
+
+impl From<&Status> for JsonStatus {
+    fn from(s: &Status) -> Self {
+        Self {
+            dirty: s.dirty,
+            ahead: s.ahead,
+            behind: s.behind,
+            untracked: s.untracked,
+        }
+    }
+}
+
+// ── Table renderer ───────────────────────────────────────────────────────────
 
 /// Render a single repo section (header + table) to a String.
 /// This is the unit under insta snapshot test.
@@ -86,6 +144,52 @@ pub fn render_repo_section(repo_id: &str, rows: &[ProjectRow]) -> String {
     out
 }
 
+// ── Short renderer ───────────────────────────────────────────────────────────
+
+/// Render compact one-line-per-project output for a single repo section.
+pub fn render_short_section(repo_id: &str, rows: &[ProjectRow]) -> String {
+    let col_widths = compute_short_col_widths(repo_id, rows);
+    let mut out = String::new();
+    for row in rows {
+        let label = format!("{}/{}", repo_id, row.tag);
+        let status_text = format_status(row.status.as_ref());
+        let line = format!(
+            "{:<lw$}  {:<bw$}  {}\n",
+            label,
+            row.project.branch,
+            status_text,
+            lw = col_widths.label,
+            bw = col_widths.branch,
+        );
+        out.push_str(&line);
+    }
+    out
+}
+
+struct ShortColWidths {
+    label: usize,
+    branch: usize,
+}
+
+fn compute_short_col_widths(repo_id: &str, rows: &[ProjectRow]) -> ShortColWidths {
+    let label_w = rows
+        .iter()
+        .map(|r| repo_id.len() + 1 + r.tag.len())
+        .max()
+        .unwrap_or(0);
+    let branch_w = rows
+        .iter()
+        .map(|r| r.project.branch.len())
+        .max()
+        .unwrap_or(0);
+    ShortColWidths {
+        label: label_w,
+        branch: branch_w,
+    }
+}
+
+// ── Status formatter ─────────────────────────────────────────────────────────
+
 fn format_status(status: Option<&Status>) -> String {
     let Some(s) = status else {
         return "unknown".to_string();
@@ -101,6 +205,8 @@ fn format_status(status: Option<&Status>) -> String {
         _ => "clean".to_string(),
     }
 }
+
+// ── Entry point ──────────────────────────────────────────────────────────────
 
 pub fn run(args: &ListArgs, cx: &RepoContext) -> anyhow::Result<()> {
     // Cross-repo dispatch (grove-4pe.3) is a later bead.
@@ -121,6 +227,44 @@ pub fn run(args: &ListArgs, cx: &RepoContext) -> anyhow::Result<()> {
             }
         })
         .collect();
+
+    if args.json {
+        let projects: Vec<JsonProject> = rows
+            .iter()
+            .map(|r| JsonProject {
+                tag: r.tag.clone(),
+                path: r.project.path.display().to_string(),
+                branch: r.project.branch.clone(),
+                base: r.project.base.clone(),
+                issue: r.project.issue,
+                frozen: r.project.frozen,
+                created: r.project.created,
+                status: if args.no_status {
+                    None
+                } else {
+                    r.status.as_ref().map(JsonStatus::from)
+                },
+            })
+            .collect();
+
+        let output = JsonOutput {
+            version: 1,
+            repos: vec![JsonRepo {
+                id: cx.id.clone(),
+                projects,
+            }],
+        };
+
+        let json = serde_json::to_string_pretty(&output)?;
+        println!("{json}");
+        return Ok(());
+    }
+
+    if args.short {
+        let section = render_short_section(&cx.id, &rows);
+        print!("{section}");
+        return Ok(());
+    }
 
     let section = render_repo_section(&cx.id, &rows);
     print!("{section}");
@@ -174,6 +318,26 @@ mod tests {
             behind: Some(0),
             untracked: 0,
         }
+    }
+
+    fn fixture_rows() -> Vec<ProjectRow> {
+        vec![
+            ProjectRow {
+                tag: "alpha".to_string(),
+                project: make_project("PROJ-1-alpha", "origin/main", Some(1), false),
+                status: Some(clean_status()),
+            },
+            ProjectRow {
+                tag: "beta".to_string(),
+                project: make_project("PROJ-2-beta", "origin/main", Some(2), false),
+                status: Some(dirty_status()),
+            },
+            ProjectRow {
+                tag: "gamma".to_string(),
+                project: make_project("PROJ-3-gamma", "origin/main", None, true),
+                status: Some(ahead_status(3)),
+            },
+        ]
     }
 
     #[test]
@@ -249,5 +413,91 @@ mod tests {
             })),
             "2 ahead, 3 behind"
         );
+    }
+
+    #[test]
+    fn snapshot_short_section() {
+        unsafe { std::env::set_var("NO_COLOR", "1") };
+        let output = render_short_section("test-repo", &fixture_rows());
+        unsafe { std::env::remove_var("NO_COLOR") };
+        assert_snapshot!("list__short", output);
+    }
+
+    #[test]
+    fn snapshot_json_with_status() {
+        let rows = fixture_rows();
+        let projects: Vec<JsonProject> = rows
+            .iter()
+            .map(|r| JsonProject {
+                tag: r.tag.clone(),
+                path: r.project.path.display().to_string(),
+                branch: r.project.branch.clone(),
+                base: r.project.base.clone(),
+                issue: r.project.issue,
+                frozen: r.project.frozen,
+                created: r.project.created,
+                status: r.status.as_ref().map(JsonStatus::from),
+            })
+            .collect();
+        let output = JsonOutput {
+            version: 1,
+            repos: vec![JsonRepo {
+                id: "test-repo".to_string(),
+                projects,
+            }],
+        };
+        let json = serde_json::to_string_pretty(&output).unwrap();
+
+        // Assert JSON ends with a closing brace (println adds the newline in run()).
+        assert!(json.ends_with('}'), "json should end with closing brace");
+
+        // Parse and assert schema shape.
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["version"], 1);
+        let repos = v["repos"].as_array().unwrap();
+        assert_eq!(repos.len(), 1);
+        assert_eq!(repos[0]["id"], "test-repo");
+        let projects = repos[0]["projects"].as_array().unwrap();
+        assert_eq!(projects.len(), 3);
+        // Status present when not no_status.
+        assert!(projects[0]["status"].is_object());
+        assert_eq!(projects[0]["tag"], "alpha");
+        assert_eq!(projects[0]["branch"], "PROJ-1-alpha");
+
+        assert_snapshot!("list__json", json);
+    }
+
+    #[test]
+    fn snapshot_json_no_status() {
+        let rows = fixture_rows();
+        let projects: Vec<JsonProject> = rows
+            .iter()
+            .map(|r| JsonProject {
+                tag: r.tag.clone(),
+                path: r.project.path.display().to_string(),
+                branch: r.project.branch.clone(),
+                base: r.project.base.clone(),
+                issue: r.project.issue,
+                frozen: r.project.frozen,
+                created: r.project.created,
+                status: None,
+            })
+            .collect();
+        let output = JsonOutput {
+            version: 1,
+            repos: vec![JsonRepo {
+                id: "test-repo".to_string(),
+                projects,
+            }],
+        };
+        let json = serde_json::to_string_pretty(&output).unwrap();
+
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let repos = v["repos"].as_array().unwrap();
+        let projects = repos[0]["projects"].as_array().unwrap();
+        // Status absent in no_status mode.
+        assert!(projects[0]["status"].is_null(), "status should be absent");
+
+        assert_snapshot!("list__json_no_status", json);
     }
 }

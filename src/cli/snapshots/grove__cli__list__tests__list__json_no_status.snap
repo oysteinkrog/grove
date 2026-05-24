@@ -1,0 +1,41 @@
+---
+source: src/cli/list.rs
+assertion_line: 496
+expression: json
+---
+{
+  "version": 1,
+  "repos": [
+    {
+      "id": "test-repo",
+      "projects": [
+        {
+          "tag": "alpha",
+          "path": "/c/work/test",
+          "branch": "PROJ-1-alpha",
+          "base": "origin/main",
+          "issue": 1,
+          "frozen": false,
+          "created": "1970-01-01T00:00:00Z"
+        },
+        {
+          "tag": "beta",
+          "path": "/c/work/test",
+          "branch": "PROJ-2-beta",
+          "base": "origin/main",
+          "issue": 2,
+          "frozen": false,
+          "created": "1970-01-01T00:00:00Z"
+        },
+        {
+          "tag": "gamma",
+          "path": "/c/work/test",
+          "branch": "PROJ-3-gamma",
+          "base": "origin/main",
+          "frozen": true,
+          "created": "1970-01-01T00:00:00Z"
+        }
+      ]
+    }
+  ]
+}
