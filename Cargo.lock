@@ -1376,7 +1376,7 @@ dependencies = [
 
 [[package]]
 name = "grove"
-version = "0.1.0-pre"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",

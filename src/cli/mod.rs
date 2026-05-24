@@ -15,16 +15,30 @@ pub mod status;
 use clap::Parser;
 use clap_complete::Shell;
 
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("GROVE_GIT_SHA"),
+    " ",
+    env!("GROVE_BUILD_DATE"),
+    ")"
+);
+
 #[derive(Parser, Debug)]
 #[command(
     name = "grove",
     version,
+    long_version = LONG_VERSION,
     about = "Fast multi-repo git-worktree manager"
 )]
 pub struct Cli {
     /// Increase log verbosity (-v = INFO, -vv = DEBUG, -vvv = TRACE)
     #[arg(short, long, action = clap::ArgAction::Count, global = true)]
     pub verbose: u8,
+
+    /// Operate on this specific repo (overrides cwd-based detection)
+    #[arg(long, global = true)]
+    pub repo: Option<String>,
 
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -128,13 +142,40 @@ pub enum Command {
 
 #[derive(clap::Subcommand, Debug)]
 pub enum RepoCmd {
-    /// List configured repos
-    List,
-    /// Add a repo
-    Add {
-        id: String,
-        path: std::path::PathBuf,
+    /// Print the work_dir of the current or default repo
+    Path {
+        #[arg(long)]
+        default: bool,
     },
-    /// Remove a repo
-    Remove { id: String },
+    /// Add a repo to repos.json
+    Add {
+        path: std::path::PathBuf,
+        #[arg(long)]
+        id: Option<String>,
+        #[arg(long)]
+        issue_prefix: Option<String>,
+        #[arg(long)]
+        upstream: Option<String>,
+        #[arg(long)]
+        fork: Option<String>,
+        #[arg(long)]
+        default_base: Option<String>,
+        #[arg(long = "default")]
+        make_default: bool,
+    },
+    /// List configured repos
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show full details for one repo
+    Show { id: String },
+    /// Remove a repo from repos.json
+    Remove {
+        id: String,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Set the default_repo in repos.json
+    Default { id: String },
 }
