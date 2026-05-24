@@ -220,15 +220,21 @@ pub fn run_if_needed(config_dir: &Path) -> Result<MigrationOutcome, MigrationErr
     eprintln!("grove: migrating legacy config to multi-repo format...");
 
     // Partial state: only registry present — write a minimal manifest with defaults.
+    // The default work_dir/main_repo can be overridden via env vars so tests can
+    // exercise this branch without writing into the host filesystem.
     let legacy_cfg: LegacyConfig = if legacy_config_path.exists() {
         read_json_file(&legacy_config_path)?
     } else {
         eprintln!(
             "grove migrate: config.json not found; writing manifest with defaults (please review)"
         );
+        let default_work_dir = std::env::var("GROVE_MIGRATE_DEFAULT_WORK_DIR")
+            .unwrap_or_else(|_| "/c/work/desktop".to_string());
+        let default_main_repo = std::env::var("GROVE_MIGRATE_DEFAULT_MAIN_REPO")
+            .unwrap_or_else(|_| format!("{default_work_dir}/master"));
         LegacyConfig {
-            main_repo: "/c/work/desktop/master".to_string(),
-            work_dir: "/c/work/desktop".to_string(),
+            main_repo: default_main_repo,
+            work_dir: default_work_dir,
             dir_prefix: String::new(),
             upstream_remote: "if".to_string(),
             fork_remote: "my".to_string(),
@@ -471,28 +477,69 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn only_registry_present_partial_state() {
-        // config.json absent but registry.json present → migrate with defaults, warn.
+        // config.json absent but registry.json present → migrate with defaults.
+        // The defaults branch normally hardcodes /c/work/desktop which would
+        // clobber the host registry on a developer machine; redirect both
+        // default work_dir and main_repo into a tempdir via env vars.
         let config_dir = TempDir::new().unwrap();
-        // Default work_dir from LegacyConfig defaults is /c/work/desktop which may or
-        // may not exist on this machine. Write a registry at the config_dir level only
-        // and assert we get Migrated back (no panic, no error).
+        let fake_work_dir = TempDir::new().unwrap();
+        fs::create_dir_all(fake_work_dir.path().join("master")).unwrap();
+
         fs::write(
             config_dir.path().join("registry.json"),
             serde_json::to_string(&make_legacy_registry(2)).unwrap(),
         )
         .unwrap();
 
-        // This may fail if /c/work/desktop doesn't exist; so we override via a
-        // full config that points at a tempdir to avoid FS issues in CI.
-        // Actually the default config hardcodes /c/work/desktop/master which may
-        // not exist; migration will try to create work_dir/.grove/ and fail.
-        // So just verify we get an error or Migrated — what matters is no panic.
+        // SAFETY: env-mutation is serialized via serial_test.
+        unsafe {
+            std::env::set_var(
+                "GROVE_MIGRATE_DEFAULT_WORK_DIR",
+                fake_work_dir.path().to_string_lossy().as_ref(),
+            );
+            std::env::set_var(
+                "GROVE_MIGRATE_DEFAULT_MAIN_REPO",
+                fake_work_dir
+                    .path()
+                    .join("master")
+                    .to_string_lossy()
+                    .as_ref(),
+            );
+        }
+
         let result = run_if_needed(config_dir.path());
-        // Either succeeds (on a machine where /c/work/desktop exists) or returns a
-        // structured MigrationError — never a panic.
-        match result {
-            Ok(_) | Err(_) => {}
+
+        unsafe {
+            std::env::remove_var("GROVE_MIGRATE_DEFAULT_WORK_DIR");
+            std::env::remove_var("GROVE_MIGRATE_DEFAULT_MAIN_REPO");
+        }
+
+        // Must succeed — defaults now point at a writable tempdir.
+        let outcome =
+            result.expect("partial-state migration must succeed with redirected defaults");
+        assert!(
+            matches!(
+                outcome,
+                MigrationOutcome::Migrated {
+                    project_count: 2,
+                    ..
+                }
+            ),
+            "expected Migrated with 2 projects, got {:?}",
+            outcome
+        );
+
+        // Host registry must NOT have been touched.
+        let host_registry = std::path::PathBuf::from("/c/work/desktop/.grove/registry.json");
+        if host_registry.exists() {
+            let contents = fs::read_to_string(&host_registry).unwrap_or_default();
+            assert!(
+                !contents.contains("proj-0") || !contents.contains("DESKTOP-1000-proj-0"),
+                "host registry at {} was clobbered with fixture data",
+                host_registry.display()
+            );
         }
     }
 
