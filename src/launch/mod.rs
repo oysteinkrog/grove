@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+pub mod wezterm;
 pub mod windows_terminal;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,24 +32,6 @@ pub trait Terminal: Send + Sync {
     fn launch(&self, opts: &LaunchOptions) -> Result<(), LaunchError>;
     fn dry_run(&self, opts: &LaunchOptions) -> Result<String, LaunchError>;
     fn kind(&self) -> TerminalKind;
-}
-
-pub struct WeztermLauncher;
-
-impl Terminal for WeztermLauncher {
-    fn launch(&self, _opts: &LaunchOptions) -> Result<(), LaunchError> {
-        unimplemented!("WezTerm launch impl lands in grove-u6c.4")
-    }
-
-    fn dry_run(&self, opts: &LaunchOptions) -> Result<String, LaunchError> {
-        let cwd = opts.cwd.display();
-        let cmd = opts.command.as_deref().unwrap_or("");
-        Ok(format!("[wezterm] spawn --cwd '{cwd}' -- wsl.exe -e {cmd}"))
-    }
-
-    fn kind(&self) -> TerminalKind {
-        TerminalKind::Wezterm
-    }
 }
 
 /// Autodetect the preferred terminal from env vars and PATH.
