@@ -27,6 +27,12 @@ pub enum GroveError {
 
     #[error("path is not a git worktree: {path}")]
     WorktreeInvalid { path: std::path::PathBuf },
+
+    #[error("path is not a git repo: {path}")]
+    NotAGitRepo { path: std::path::PathBuf },
+
+    #[error("repo id '{id}' already exists in repos.json")]
+    DuplicateRepoId { id: String },
 }
 
 pub type Result<T> = std::result::Result<T, GroveError>;

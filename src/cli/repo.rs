@@ -1,9 +1,26 @@
+use std::path::{Path, PathBuf};
+
 use anyhow::{Result, anyhow};
 
+use crate::config::global::{RepoEntry, ReposManifest};
+use crate::error::GroveError;
+use crate::registry::Registry;
 use crate::repo::RepoContext;
 
 pub enum RepoSubcommand {
     Path { default: bool },
+    Add(AddArgs),
+}
+
+pub struct AddArgs {
+    pub path: PathBuf,
+    pub id: Option<String>,
+    pub issue_prefix: Option<String>,
+    pub upstream: Option<String>,
+    pub fork: Option<String>,
+    pub default_base: Option<String>,
+    pub make_default: bool,
+    pub config_dir: PathBuf,
 }
 
 pub struct RepoArgs {
@@ -26,15 +43,97 @@ pub fn render(args: &RepoArgs, cx: &RepoContext) -> Result<String> {
             Ok(entry.work_dir.to_string_lossy().into_owned())
         }
         RepoSubcommand::Path { default: false } => {
-            // Print current repo's work_dir.
             Ok(cx.resolved.work_dir.to_string_lossy().into_owned())
         }
+        RepoSubcommand::Add(_) => Err(anyhow!("use run() for add subcommand")),
     }
 }
 
 pub fn run(args: &RepoArgs, cx: &RepoContext) -> Result<()> {
-    let output = render(args, cx)?;
-    println!("{output}");
+    match &args.subcommand {
+        RepoSubcommand::Add(add_args) => run_add(add_args),
+        _ => {
+            let output = render(args, cx)?;
+            println!("{output}");
+            Ok(())
+        }
+    }
+}
+
+fn is_git_repo(path: &Path) -> bool {
+    // Fast check: presence of .git entry. Works for both regular repos and worktrees.
+    if path.join(".git").exists() {
+        return true;
+    }
+    // Fallback: try gix discovery (handles bare repos and edge cases).
+    gix::discover(path).is_ok()
+}
+
+pub fn run_add(args: &AddArgs) -> Result<()> {
+    let path = args
+        .path
+        .canonicalize()
+        .map_err(|e| anyhow!("cannot resolve path '{}': {e}", args.path.display()))?;
+
+    if !is_git_repo(&path) {
+        return Err(GroveError::NotAGitRepo { path }.into());
+    }
+
+    let id = match &args.id {
+        Some(id) => id.clone(),
+        None => path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+            .ok_or_else(|| anyhow!("cannot derive repo id from path '{}'", path.display()))?,
+    };
+
+    let mut manifest = ReposManifest::load(&args.config_dir)
+        .map_err(|e| anyhow!("failed to load repos.json: {e}"))?;
+
+    if manifest.repos.contains_key(&id) {
+        return Err(GroveError::DuplicateRepoId { id }.into());
+    }
+
+    let upstream_remote = args
+        .upstream
+        .clone()
+        .unwrap_or_else(|| "upstream".to_string());
+    let fork_remote = args.fork.clone().unwrap_or_else(|| "origin".to_string());
+    let default_base = args
+        .default_base
+        .clone()
+        .unwrap_or_else(|| "main".to_string());
+
+    let entry = RepoEntry {
+        main_repo: path.clone(),
+        work_dir: path.clone(),
+        dir_prefix: String::new(),
+        upstream_remote,
+        fork_remote,
+        default_base,
+        issue_prefix: args.issue_prefix.clone(),
+        launch: None,
+    };
+
+    manifest.repos.insert(id.clone(), entry);
+
+    if args.make_default {
+        manifest.default_repo = Some(id.clone());
+    }
+
+    manifest
+        .save(&args.config_dir)
+        .map_err(|e| anyhow!("failed to save repos.json: {e}"))?;
+
+    // Create .grove/ directory and empty registry.json under work_dir.
+    let grove_dir = path.join(".grove");
+    let empty_registry = Registry::default();
+    empty_registry
+        .save(&grove_dir)
+        .map_err(|e| anyhow!("failed to create .grove/registry.json: {e}"))?;
+
+    println!("Added repo '{id}' at {}", path.display());
     Ok(())
 }
 
