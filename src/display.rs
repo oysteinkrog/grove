@@ -27,7 +27,8 @@ pub fn make_table() -> Table {
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL_CONDENSED)
-        .set_content_arrangement(ContentArrangement::Dynamic);
+        .set_content_arrangement(ContentArrangement::Dynamic)
+        .set_width(terminal_width());
     table
 }
 

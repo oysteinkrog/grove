@@ -3,10 +3,11 @@ source: src/cli/list.rs
 expression: output
 ---
 ── test-repo ──
-┌────────────────┬──────────────┬─────────────┬─────────┬───────┐
-│ Tag            ┆ Branch       ┆ Base        ┆ Status  ┆ Issue │
-╞════════════════╪══════════════╪═════════════╪═════════╪═══════╡
-│ alpha          ┆ PROJ-1-alpha ┆ origin/main ┆ clean   ┆ #1    │
-│ beta           ┆ PROJ-2-beta  ┆ origin/main ┆ dirty   ┆ #2    │
-│ gamma (frozen) ┆ PROJ-3-gamma ┆ origin/main ┆ 3 ahead ┆       │
-└────────────────┴──────────────┴─────────────┴─────────┴───────┘
+┌─────────┬──────────────┬─────────────┬───────────┬───────┐
+│ Tag     ┆ Branch       ┆ Base        ┆ Status    ┆ Issue │
+╞═════════╪══════════════╪═════════════╪═══════════╪═══════╡
+│ alpha   ┆ PROJ-1-alpha ┆ origin/main ┆ ✓ clean   ┆    #1 │
+│ beta    ┆ PROJ-2-beta  ┆ origin/main ┆ ● dirty   ┆    #2 │
+│ ❄ gamma ┆ PROJ-3-gamma ┆ origin/main ┆ ↑ 3 ahead ┆       │
+└─────────┴──────────────┴─────────────┴───────────┴───────┘
+3 projects · 1 dirty · 1 ahead · 1 frozen

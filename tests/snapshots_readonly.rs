@@ -92,6 +92,7 @@ fn alpha_rows() -> Vec<ProjectRow> {
                 false,
             ),
             status: Some(clean_status()),
+            missing: false,
         },
         ProjectRow {
             tag: "dirty".to_string(),
@@ -103,6 +104,7 @@ fn alpha_rows() -> Vec<ProjectRow> {
                 false,
             ),
             status: Some(dirty_status()),
+            missing: false,
         },
         ProjectRow {
             tag: "ahead".to_string(),
@@ -114,6 +116,7 @@ fn alpha_rows() -> Vec<ProjectRow> {
                 false,
             ),
             status: Some(ahead_status(3)),
+            missing: false,
         },
     ]
 }
@@ -130,6 +133,7 @@ fn beta_rows() -> Vec<ProjectRow> {
                 true,
             ),
             status: Some(clean_status()),
+            missing: false,
         },
         ProjectRow {
             tag: "behind".to_string(),
@@ -141,6 +145,7 @@ fn beta_rows() -> Vec<ProjectRow> {
                 false,
             ),
             status: Some(behind_status(2)),
+            missing: false,
         },
     ]
 }

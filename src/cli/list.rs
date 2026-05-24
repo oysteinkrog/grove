@@ -1,12 +1,16 @@
 use std::path::PathBuf;
 
-use comfy_table::{Cell, Color};
+use comfy_table::{Cell, CellAlignment, Color};
 use rayon::prelude::*;
 use serde::Serialize;
 use time::OffsetDateTime;
 
 use crate::display::{self, make_table};
-use crate::git::status::Status;
+use crate::git::{
+    WorktreeManager,
+    gix_backend::GixBackend,
+    status::{Status, compute as compute_status},
+};
 use crate::registry::{Project, Registry};
 use crate::repo::RepoContext;
 
@@ -24,6 +28,8 @@ pub struct ProjectRow {
     pub tag: String,
     pub project: Project,
     pub status: Option<Status>,
+    /// True when the project's path no longer exists on disk.
+    pub missing: bool,
 }
 
 // ── JSON output structs ──────────────────────────────────────────────────────
@@ -79,14 +85,24 @@ impl From<&Status> for JsonStatus {
 /// Render a single repo section (header + table) to a String.
 /// This is the unit under insta snapshot test.
 pub fn render_repo_section(repo_id: &str, rows: &[ProjectRow]) -> String {
+    render_repo_section_with_marker(repo_id, rows, false)
+}
+
+/// Render a section with optional "current cwd" marker on the header.
+pub fn render_repo_section_with_marker(repo_id: &str, rows: &[ProjectRow], is_cwd: bool) -> String {
     let mut out = String::new();
 
-    let header = format!("── {repo_id} ──");
+    let cwd_marker = if is_cwd { " (here)" } else { "" };
+    let header_text = format!("── {repo_id}{cwd_marker} ──");
     let header = if display::use_color() {
         use owo_colors::OwoColorize;
-        header.bold().to_string()
+        if is_cwd {
+            header_text.bold().cyan().to_string()
+        } else {
+            header_text.bold().to_string()
+        }
     } else {
-        header
+        header_text
     };
     out.push_str(&header);
     out.push('\n');
@@ -101,49 +117,185 @@ pub fn render_repo_section(repo_id: &str, rows: &[ProjectRow]) -> String {
     ]);
 
     for row in rows {
-        let tag_text = if row.project.frozen {
-            format!("{} (frozen)", row.tag)
-        } else {
-            row.tag.clone()
-        };
-
-        let tag_cell = if row.project.frozen {
-            Cell::new(display::dim(&tag_text))
-        } else {
-            Cell::new(tag_text)
-        };
-
-        let status_text = format_status(row.status.as_ref());
-        let status_cell = if let Some(ref s) = row.status {
-            if s.dirty {
-                Cell::new(&status_text).fg(Color::Yellow)
-            } else if s.ahead.unwrap_or(0) > 0 {
-                Cell::new(&status_text).fg(Color::Green)
-            } else {
-                Cell::new(&status_text)
-            }
-        } else {
-            Cell::new(&status_text)
-        };
-
-        let issue_text = row
-            .project
-            .issue
-            .map(|n| format!("#{n}"))
-            .unwrap_or_default();
-
         table.add_row(vec![
-            tag_cell,
-            Cell::new(&row.project.branch),
-            Cell::new(&row.project.base),
-            status_cell,
-            Cell::new(issue_text),
+            tag_cell(row),
+            branch_cell(row),
+            base_cell(row),
+            status_cell(row),
+            issue_cell(row),
         ]);
     }
 
     out.push_str(&table.to_string());
     out.push('\n');
+
+    // Summary footer: "43 projects · 5 dirty · 2 ahead · 3 frozen"
+    let summary = build_summary(rows);
+    if !summary.is_empty() {
+        let line = if display::use_color() {
+            use owo_colors::OwoColorize;
+            summary.dimmed().to_string()
+        } else {
+            summary
+        };
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out.push('\n');
     out
+}
+
+fn tag_cell(row: &ProjectRow) -> Cell {
+    let tag = &row.tag;
+    if row.project.frozen {
+        let text = format!("❄ {tag}");
+        Cell::new(display::dim(&text))
+    } else if display::use_color() {
+        use owo_colors::OwoColorize;
+        Cell::new(tag.bold().to_string())
+    } else {
+        Cell::new(tag)
+    }
+}
+
+fn branch_cell(row: &ProjectRow) -> Cell {
+    let branch = &row.project.branch;
+    if !display::use_color() {
+        return Cell::new(branch);
+    }
+    // Dim the "DESKTOP-NNNNN-" prefix to emphasize the unique tail.
+    if let Some(stripped) = strip_issue_prefix(branch) {
+        use owo_colors::OwoColorize;
+        let (prefix, rest) = branch.split_at(branch.len() - stripped.len());
+        Cell::new(format!("{}{}", prefix.dimmed(), rest))
+    } else {
+        Cell::new(branch)
+    }
+}
+
+/// If `branch` starts with `<PREFIX>-<digits>-`, return the suffix after that.
+fn strip_issue_prefix(branch: &str) -> Option<&str> {
+    let first_dash = branch.find('-')?;
+    let after_prefix = &branch[first_dash + 1..];
+    let second_dash = after_prefix.find('-')?;
+    let middle = &after_prefix[..second_dash];
+    if !middle.is_empty() && middle.chars().all(|c| c.is_ascii_digit()) {
+        Some(&after_prefix[second_dash + 1..])
+    } else {
+        None
+    }
+}
+
+fn base_cell(row: &ProjectRow) -> Cell {
+    let base = &row.project.base;
+    Cell::new(display::dim(base))
+}
+
+fn status_cell(row: &ProjectRow) -> Cell {
+    if row.missing {
+        let text = "✗ missing";
+        return Cell::new(text).fg(Color::Red);
+    }
+    let glyph = status_glyph(row.status.as_ref());
+    let text = format_status(row.status.as_ref());
+    let display_text = format!("{glyph} {text}");
+    match row.status.as_ref() {
+        None => Cell::new(display::dim(&display_text)),
+        Some(s) if s.dirty => Cell::new(&display_text).fg(Color::Yellow),
+        Some(s) => match (s.ahead.unwrap_or(0), s.behind.unwrap_or(0)) {
+            (0, 0) => Cell::new(&display_text).fg(Color::Green),
+            (_, 0) => Cell::new(&display_text).fg(Color::Cyan),
+            (0, _) => Cell::new(&display_text).fg(Color::Magenta),
+            _ => Cell::new(&display_text).fg(Color::Yellow),
+        },
+    }
+}
+
+fn issue_cell(row: &ProjectRow) -> Cell {
+    match row.project.issue {
+        Some(n) => {
+            let text = format!("#{n}");
+            let colored = if display::use_color() {
+                use owo_colors::OwoColorize;
+                text.cyan().to_string()
+            } else {
+                text
+            };
+            Cell::new(colored).set_alignment(CellAlignment::Right)
+        }
+        None => Cell::new("").set_alignment(CellAlignment::Right),
+    }
+}
+
+fn status_glyph(status: Option<&Status>) -> &'static str {
+    let Some(s) = status else {
+        return "?";
+    };
+    if s.dirty {
+        return "●";
+    }
+    match (s.ahead.unwrap_or(0), s.behind.unwrap_or(0)) {
+        (0, 0) => "✓",
+        (_, 0) => "↑",
+        (0, _) => "↓",
+        _ => "↕",
+    }
+}
+
+fn build_summary(rows: &[ProjectRow]) -> String {
+    let total = rows.len();
+    let mut dirty = 0usize;
+    let mut ahead = 0usize;
+    let mut behind = 0usize;
+    let mut frozen = 0usize;
+    let mut missing = 0usize;
+    let mut scanned = 0usize;
+    for r in rows {
+        if r.project.frozen {
+            frozen += 1;
+        }
+        if r.missing {
+            missing += 1;
+            continue;
+        }
+        if let Some(ref s) = r.status {
+            scanned += 1;
+            if s.dirty {
+                dirty += 1;
+            } else {
+                if s.ahead.unwrap_or(0) > 0 {
+                    ahead += 1;
+                }
+                if s.behind.unwrap_or(0) > 0 {
+                    behind += 1;
+                }
+            }
+        }
+    }
+    let mut parts = vec![format!(
+        "{total} {}",
+        if total == 1 { "project" } else { "projects" }
+    )];
+    if dirty > 0 {
+        parts.push(format!("{dirty} dirty"));
+    }
+    if ahead > 0 {
+        parts.push(format!("{ahead} ahead"));
+    }
+    if behind > 0 {
+        parts.push(format!("{behind} behind"));
+    }
+    if frozen > 0 {
+        parts.push(format!("{frozen} frozen"));
+    }
+    if missing > 0 {
+        parts.push(format!("{missing} missing"));
+    }
+    let unscanned = total.saturating_sub(scanned + missing);
+    if unscanned > 0 {
+        parts.push(format!("{unscanned} unscanned"));
+    }
+    parts.join(" · ")
 }
 
 // ── Short renderer ───────────────────────────────────────────────────────────
@@ -154,12 +306,12 @@ pub fn render_short_section(repo_id: &str, rows: &[ProjectRow]) -> String {
     let mut out = String::new();
     for row in rows {
         let label = format!("{}/{}", repo_id, row.tag);
+        let glyph = status_glyph(row.status.as_ref());
         let status_text = format_status(row.status.as_ref());
         let line = format!(
-            "{:<lw$}  {:<bw$}  {}\n",
+            "{:<lw$}  {:<bw$}  {glyph} {status_text}\n",
             label,
             row.project.branch,
-            status_text,
             lw = col_widths.label,
             bw = col_widths.branch,
         );
@@ -235,12 +387,35 @@ fn load_repo_rows(work_dir: &std::path::Path) -> Vec<ProjectRow> {
     let registry = Registry::load(&grove_dir).unwrap_or_default();
     registry
         .list()
-        .map(|(tag, project)| ProjectRow {
-            tag: tag.to_string(),
-            project: project.clone(),
-            status: None,
+        .map(|(tag, project)| {
+            let missing = !project.path.exists();
+            ProjectRow {
+                tag: tag.to_string(),
+                project: project.clone(),
+                status: None,
+                missing,
+            }
         })
         .collect()
+}
+
+/// Compute git status for each project in parallel. Projects whose path no
+/// longer exists or whose `.git` is missing get `status: None`.
+fn scan_statuses(rows: &mut [ProjectRow]) {
+    let backend = GixBackend;
+    let statuses: Vec<Option<Status>> = rows
+        .par_iter()
+        .map(|row| {
+            if row.missing {
+                return None;
+            }
+            let wt = backend.open(&row.project.path).ok()?;
+            compute_status(&wt).ok()
+        })
+        .collect();
+    for (row, status) in rows.iter_mut().zip(statuses.into_iter()) {
+        row.status = status;
+    }
 }
 
 pub fn run(args: &ListArgs, cx: &RepoContext) -> anyhow::Result<()> {
@@ -254,12 +429,19 @@ pub fn run(args: &ListArgs, cx: &RepoContext) -> anyhow::Result<()> {
     // Detect cwd-matched repo for ordering.
     let cwd_id = cwd_repo_id(cx);
 
-    // Load rows in parallel across repos.
+    // Decide whether to run status scans. JSON respects --no-status; table mode
+    // always scans (the whole point of `grove list` is to see status).
+    let want_status = !args.json || !args.no_status;
+
+    // Load rows in parallel across repos, then scan statuses in parallel within.
     let mut sections: Vec<(String, Vec<ProjectRow>)> = all_ids
         .par_iter()
         .filter_map(|id| {
             let entry = cx.global.repos.get(id)?;
-            let rows = load_repo_rows(&entry.work_dir);
+            let mut rows = load_repo_rows(&entry.work_dir);
+            if want_status {
+                scan_statuses(&mut rows);
+            }
             Some((id.clone(), rows))
         })
         .collect();
@@ -318,19 +500,24 @@ pub fn run(args: &ListArgs, cx: &RepoContext) -> anyhow::Result<()> {
     }
 
     for (id, rows) in &sections {
+        let is_cwd = cwd_id.as_deref() == Some(id.as_str());
         if rows.is_empty() {
-            let header = format!("── {id} ──");
+            let header_text = format!("── {id}{} ──", if is_cwd { " (here)" } else { "" });
             let header = if display::use_color() {
                 use owo_colors::OwoColorize;
-                header.bold().to_string()
+                if is_cwd {
+                    header_text.bold().cyan().to_string()
+                } else {
+                    header_text.bold().to_string()
+                }
             } else {
-                header
+                header_text
             };
             println!("{header}");
             println!("(no projects)");
             println!();
         } else {
-            let section = render_repo_section(id, rows);
+            let section = render_repo_section_with_marker(id, rows, is_cwd);
             print!("{section}");
         }
     }
@@ -402,16 +589,19 @@ mod tests {
                 tag: "alpha".to_string(),
                 project: make_project("PROJ-1-alpha", "origin/main", Some(1), false),
                 status: Some(clean_status()),
+                missing: false,
             },
             ProjectRow {
                 tag: "beta".to_string(),
                 project: make_project("PROJ-2-beta", "origin/main", Some(2), false),
                 status: Some(dirty_status()),
+                missing: false,
             },
             ProjectRow {
                 tag: "gamma".to_string(),
                 project: make_project("PROJ-3-gamma", "origin/main", None, true),
                 status: Some(ahead_status(3)),
+                missing: false,
             },
         ]
     }
@@ -426,16 +616,19 @@ mod tests {
                 tag: "alpha".to_string(),
                 project: make_project("PROJ-1-alpha", "origin/main", Some(1), false),
                 status: Some(clean_status()),
+                missing: false,
             },
             ProjectRow {
                 tag: "beta".to_string(),
                 project: make_project("PROJ-2-beta", "origin/main", Some(2), false),
                 status: Some(dirty_status()),
+                missing: false,
             },
             ProjectRow {
                 tag: "gamma".to_string(),
                 project: make_project("PROJ-3-gamma", "origin/main", None, true),
                 status: Some(ahead_status(3)),
+                missing: false,
             },
         ];
 
@@ -454,14 +647,15 @@ mod tests {
             tag: "hotfix".to_string(),
             project: make_project("PROJ-99-hotfix", "origin/main", None, true),
             status: Some(clean_status()),
+            missing: false,
         }];
 
         let output = render_repo_section("myrepo", &rows);
         unsafe { std::env::remove_var("NO_COLOR") };
 
         assert!(
-            output.contains("(frozen)"),
-            "frozen project should show (frozen) suffix"
+            output.contains("❄"),
+            "frozen project should show snowflake glyph"
         );
     }
 

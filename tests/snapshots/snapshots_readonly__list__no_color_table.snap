@@ -3,10 +3,11 @@ source: tests/snapshots_readonly.rs
 expression: table_out
 ---
 ── alpha-repo ──
-┌───────┬───────────────┬─────────────┬─────────┬───────┐
-│ Tag   ┆ Branch        ┆ Base        ┆ Status  ┆ Issue │
-╞═══════╪═══════════════╪═════════════╪═════════╪═══════╡
-│ clean ┆ ALPHA-1-clean ┆ origin/main ┆ clean   ┆ #1    │
-│ dirty ┆ ALPHA-2-dirty ┆ origin/main ┆ dirty   ┆ #2    │
-│ ahead ┆ ALPHA-3-ahead ┆ origin/main ┆ 3 ahead ┆ #3    │
-└───────┴───────────────┴─────────────┴─────────┴───────┘
+┌───────┬───────────────┬─────────────┬───────────┬───────┐
+│ Tag   ┆ Branch        ┆ Base        ┆ Status    ┆ Issue │
+╞═══════╪═══════════════╪═════════════╪═══════════╪═══════╡
+│ clean ┆ ALPHA-1-clean ┆ origin/main ┆ ✓ clean   ┆    #1 │
+│ dirty ┆ ALPHA-2-dirty ┆ origin/main ┆ ● dirty   ┆    #2 │
+│ ahead ┆ ALPHA-3-ahead ┆ origin/main ┆ ↑ 3 ahead ┆    #3 │
+└───────┴───────────────┴─────────────┴───────────┴───────┘
+3 projects · 1 dirty · 1 ahead
