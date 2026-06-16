@@ -125,9 +125,9 @@ pub enum Command {
         #[arg(long)]
         no_claude: bool,
     },
-    /// Remove a worktree project
+    /// Remove a worktree project (defaults to the current directory's worktree)
     Done {
-        tag: String,
+        tag: Option<String>,
         #[arg(long)]
         force: bool,
         #[arg(long)]

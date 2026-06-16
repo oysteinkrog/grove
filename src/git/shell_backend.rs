@@ -72,6 +72,41 @@ impl ShellBackend {
     ) -> Result<(), GroveError> {
         self.run(repo_path, &["push", remote, "--delete", branch])
     }
+
+    /// Return true when `commit` is reachable from at least one remote-tracking
+    /// branch (`refs/remotes/**`). Used to decide whether removing a worktree
+    /// would lose committed work: if the commit lives on a remote (pushed, or
+    /// merged into a remote branch), it is safe to remove even when the worktree
+    /// is on a detached HEAD or its local branch has no upstream configured.
+    pub fn commit_on_any_remote(
+        &self,
+        repo_path: &Path,
+        commit: &str,
+    ) -> Result<bool, GroveError> {
+        let cmd_str = format!(
+            "{} -C {} branch -r --contains {commit}",
+            self.git_path.display(),
+            repo_path.display(),
+        );
+        let output = Command::new(&self.git_path)
+            .arg("-C")
+            .arg(repo_path)
+            .args(["branch", "-r", "--contains", commit])
+            .output()
+            .map_err(|e| GroveError::GitCommandFailed {
+                cmd: cmd_str.clone(),
+                stderr: e.to_string(),
+            })?;
+
+        if !output.status.success() {
+            return Err(GroveError::GitCommandFailed {
+                cmd: cmd_str,
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            });
+        }
+
+        Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+    }
 }
 
 impl WorktreeMutator for ShellBackend {

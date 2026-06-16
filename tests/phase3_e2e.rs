@@ -116,7 +116,7 @@ fn phase3_full_lifecycle() {
     {
         let cx = fx.make_context();
         let args = DoneArgs {
-            tag: "alpha".to_string(),
+            tag: Some("alpha".to_string()),
             force: true,
             keep_local: false,
             keep_remote: true, // no real remote push was done; skip remote delete

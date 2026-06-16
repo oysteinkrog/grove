@@ -4,21 +4,59 @@ use crate::git::{GixBackend, ShellBackend, WorktreeManager, WorktreeMutator};
 use crate::repo::RepoContext;
 
 pub struct DoneArgs {
-    pub tag: String,
+    /// Worktree tag. When `None`, the tag is inferred from the current directory.
+    pub tag: Option<String>,
     pub force: bool,
     pub keep_local: bool,
     pub keep_remote: bool,
 }
 
+/// Resolve the target tag: use the explicit argument when present, otherwise
+/// infer it from the current working directory (the deepest registered project
+/// whose path contains the cwd), mirroring `grove freeze` / `grove fork`.
+fn resolve_tag(args: &DoneArgs, cx: &RepoContext) -> Result<String> {
+    if let Some(ref tag) = args.tag {
+        return Ok(tag.clone());
+    }
+
+    let cwd = std::env::var("GROVE_ORIG_CWD")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .ok_or_else(|| GroveError::RepoDiscovery {
+            hint: "cannot determine current directory; pass a tag explicitly: grove done <tag>"
+                .to_string(),
+        })?;
+
+    let mut best: Option<(usize, String)> = None;
+    for (tag, project) in &cx.registry.projects {
+        if cwd.starts_with(&project.path) {
+            let depth = project.path.components().count();
+            if best.as_ref().is_none_or(|(d, _)| depth > *d) {
+                best = Some((depth, tag.clone()));
+            }
+        }
+    }
+
+    best.map(|(_, tag)| tag).ok_or_else(|| GroveError::RepoDiscovery {
+        hint: "cwd is not inside any known worktree; pass a tag explicitly: grove done <tag>"
+            .to_string(),
+    })
+}
+
 pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
+    let tag = resolve_tag(args, cx)?;
+
     let project = cx
         .registry
         .projects
-        .get(&args.tag)
-        .ok_or_else(|| GroveError::WorktreeNotFound(std::path::PathBuf::from(&args.tag)))?;
+        .get(&tag)
+        .ok_or_else(|| GroveError::WorktreeNotFound(std::path::PathBuf::from(&tag)))?;
 
     let worktree_path = project.path.clone();
     let branch = project.branch.clone();
+
+    let backend = ShellBackend::new();
 
     if !args.force {
         let wt = GixBackend.open(&worktree_path)?;
@@ -28,19 +66,26 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
         })?;
 
         if status.dirty {
-            return Err(GroveError::UncommittedChanges {
-                tag: args.tag.clone(),
-            });
+            return Err(GroveError::UncommittedChanges { tag: tag.clone() });
         }
 
-        if !status.is_pushed {
-            return Err(GroveError::UnpushedCommits {
-                tag: args.tag.clone(),
-            });
+        // `is_pushed` (ahead == 0 vs the tracked upstream) is the cheap happy
+        // path. It is `false` whenever ahead/behind can't be computed — a
+        // detached HEAD or a branch with no upstream — so before blocking, check
+        // whether the worktree's HEAD commit is reachable from any remote
+        // branch. A merged PR (HEAD contained in the base's remote) or a pushed
+        // branch is safe to remove even when `is_pushed` is false.
+        let safe = status.is_pushed
+            || match wt.head() {
+                Some(oid) => backend.commit_on_any_remote(&worktree_path, &oid.to_string())?,
+                // No commits at all → nothing to lose.
+                None => true,
+            };
+
+        if !safe {
+            return Err(GroveError::UnpushedCommits { tag: tag.clone() });
         }
     }
-
-    let backend = ShellBackend::new();
 
     backend.worktree_remove(&cx.resolved.main_repo, &worktree_path, args.force)?;
 
@@ -57,13 +102,13 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
 
     let mut registry = cx.registry.clone();
     registry
-        .remove(&args.tag)
+        .remove(&tag)
         .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
     registry
         .save(&cx.grove_dir())
         .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
 
-    println!("Removed project '{}'.", args.tag);
+    println!("Removed project '{tag}'.");
     Ok(())
 }
 
@@ -221,7 +266,7 @@ mod tests {
         let cx = make_context(main_repo.path(), work_dir.path(), projects);
 
         let args = DoneArgs {
-            tag: "feature-clean".to_string(),
+            tag: Some("feature-clean".to_string()),
             force: false,
             keep_local: false,
             keep_remote: false,
@@ -253,7 +298,7 @@ mod tests {
         let cx = make_context(main_repo.path(), work_dir.path(), projects);
 
         let args = DoneArgs {
-            tag: "feature-dirty".to_string(),
+            tag: Some("feature-dirty".to_string()),
             force: false,
             keep_local: false,
             keep_remote: false,
@@ -297,7 +342,7 @@ mod tests {
         let cx = make_context(main_repo.path(), work_dir.path(), projects);
 
         let args = DoneArgs {
-            tag: "feature-unpushed".to_string(),
+            tag: Some("feature-unpushed".to_string()),
             force: false,
             keep_local: false,
             keep_remote: false,
@@ -325,7 +370,7 @@ mod tests {
         let cx = make_context(main_repo.path(), work_dir.path(), projects);
 
         let args = DoneArgs {
-            tag: "feature-keeploc".to_string(),
+            tag: Some("feature-keeploc".to_string()),
             force: false,
             keep_local: true,
             keep_remote: false,
@@ -367,7 +412,7 @@ mod tests {
         // This just verifies the command doesn't error — we don't have a remote
         // branch to begin with so we just verify successful completion.
         let args = DoneArgs {
-            tag: "feature-keeprem".to_string(),
+            tag: Some("feature-keeprem".to_string()),
             force: false,
             keep_local: false,
             keep_remote: true,
@@ -394,7 +439,7 @@ mod tests {
         let cx = make_context(main_repo.path(), work_dir.path(), projects);
 
         let args = DoneArgs {
-            tag: "feature-force".to_string(),
+            tag: Some("feature-force".to_string()),
             force: true,
             keep_local: false,
             keep_remote: false,
@@ -405,6 +450,128 @@ mod tests {
         assert!(
             !loaded.projects.contains_key("feature-force"),
             "registry entry should be removed even with dirty state when --force used"
+        );
+    }
+
+    // Regression: a detached-HEAD worktree whose commit is already on a remote
+    // (e.g. PR merged, branch left in detached state) must NOT be reported as
+    // having unpushed commits. `is_pushed` is false here (no branch → ahead is
+    // None), so removal relies on the remote-containment fallback.
+    #[test]
+    fn detached_head_on_remote_is_not_unpushed() {
+        let (_bare, main_repo) = init_bare_and_clone();
+        let work_dir = TempDir::new().unwrap();
+        let wt = make_worktree_on_branch(main_repo.path(), "feature-detached");
+
+        // Detach HEAD at the (pushed) commit, mirroring a worktree left detached
+        // after its branch was merged.
+        git(wt.path(), &["checkout", "--detach", "HEAD"]);
+
+        let mut projects = BTreeMap::new();
+        projects.insert(
+            "feature-detached".to_string(),
+            make_project(wt.path(), "feature-detached"),
+        );
+        let cx = make_context(main_repo.path(), work_dir.path(), projects);
+
+        let args = DoneArgs {
+            tag: Some("feature-detached".to_string()),
+            force: false,
+            keep_local: false,
+            keep_remote: false,
+        };
+        run(&args, &cx).expect("detached HEAD on a remote should be safe to remove");
+
+        let loaded = Registry::load(&work_dir.path().join(".grove")).unwrap();
+        assert!(
+            !loaded.projects.contains_key("feature-detached"),
+            "registry entry should be removed"
+        );
+    }
+
+    // Issue 1: `grove done` with no tag infers the target from the current
+    // directory (GROVE_ORIG_CWD), like `grove freeze` / `grove fork`.
+    #[test]
+    #[serial_test::serial]
+    fn no_tag_resolves_from_cwd() {
+        let (_bare, main_repo) = init_bare_and_clone();
+        let work_dir = TempDir::new().unwrap();
+        let wt = make_worktree_on_branch(main_repo.path(), "feature-cwd");
+
+        let mut projects = BTreeMap::new();
+        projects.insert(
+            "feature-cwd".to_string(),
+            make_project(wt.path(), "feature-cwd"),
+        );
+        let cx = make_context(main_repo.path(), work_dir.path(), projects);
+
+        let old = std::env::var("GROVE_ORIG_CWD").ok();
+        unsafe { std::env::set_var("GROVE_ORIG_CWD", wt.path()) };
+
+        let args = DoneArgs {
+            tag: None,
+            force: false,
+            keep_local: false,
+            keep_remote: false,
+        };
+        let result = run(&args, &cx);
+
+        match old {
+            Some(v) => unsafe { std::env::set_var("GROVE_ORIG_CWD", v) },
+            None => unsafe { std::env::remove_var("GROVE_ORIG_CWD") },
+        }
+
+        result.expect("done with no tag should resolve the worktree from cwd");
+
+        let loaded = Registry::load(&work_dir.path().join(".grove")).unwrap();
+        assert!(
+            !loaded.projects.contains_key("feature-cwd"),
+            "cwd-resolved worktree should be removed"
+        );
+    }
+
+    // The headline use case: `grove done --force` run from inside a dirty
+    // worktree, with no tag — resolves the worktree from cwd and force-removes
+    // it, skipping the dirty/unpushed safety checks.
+    #[test]
+    #[serial_test::serial]
+    fn no_tag_force_removes_dirty_worktree_from_cwd() {
+        let (_bare, main_repo) = init_bare_and_clone();
+        let work_dir = TempDir::new().unwrap();
+        let wt = make_worktree_on_branch(main_repo.path(), "feature-cwdforce");
+
+        // Untracked file → would block a non-forced done.
+        std::fs::write(wt.path().join("scratch.txt"), b"wip").unwrap();
+
+        let mut projects = BTreeMap::new();
+        projects.insert(
+            "feature-cwdforce".to_string(),
+            make_project(wt.path(), "feature-cwdforce"),
+        );
+        let cx = make_context(main_repo.path(), work_dir.path(), projects);
+
+        let old = std::env::var("GROVE_ORIG_CWD").ok();
+        unsafe { std::env::set_var("GROVE_ORIG_CWD", wt.path()) };
+
+        let args = DoneArgs {
+            tag: None,
+            force: true,
+            keep_local: false,
+            keep_remote: false,
+        };
+        let result = run(&args, &cx);
+
+        match old {
+            Some(v) => unsafe { std::env::set_var("GROVE_ORIG_CWD", v) },
+            None => unsafe { std::env::remove_var("GROVE_ORIG_CWD") },
+        }
+
+        result.expect("done --force with no tag should remove the cwd worktree");
+
+        let loaded = Registry::load(&work_dir.path().join(".grove")).unwrap();
+        assert!(
+            !loaded.projects.contains_key("feature-cwdforce"),
+            "force-removed cwd worktree should be deregistered"
         );
     }
 }
