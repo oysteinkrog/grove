@@ -63,10 +63,17 @@ impl TreeSafety {
 }
 
 /// Inspect a git tree with gc's own checks.
+///
+/// `--no-optional-locks` stops `git status` from refreshing the on-disk index.
+/// Two reasons, both load-bearing: the refresh takes `index.lock` in a tree
+/// another agent may be mid-command in, and it bumps the index mtime — the very
+/// signal [`check_liveness`] reads to decide whether a tree is in use, so gc's
+/// own inspection would otherwise look exactly like somebody working.
 pub fn inspect_tree(path: &Path) -> Result<TreeSafety, String> {
     let porcelain = exec::git(
         path,
         &[
+            "--no-optional-locks",
             "status",
             "--porcelain",
             "--untracked-files=all",
@@ -168,16 +175,22 @@ impl ProbeContext {
 ///
 /// `window` is the recency horizon (48h in production). A zero window disables
 /// the age-based half of the check, which is what fixture tests want.
+///
+/// `activity` must be sampled *before* gc runs anything against the tree, and
+/// is passed in rather than measured here for that reason: a caller that
+/// inspected the tree first would otherwise be reading back the timestamps its
+/// own inspection wrote.
 pub fn check_liveness(
     path: &Path,
     now: OffsetDateTime,
     window: Duration,
     probes: &ProbeContext,
+    activity: Option<OffsetDateTime>,
 ) -> Liveness {
     let mut liveness = Liveness::default();
 
     if window > Duration::ZERO {
-        if let Some(touched) = last_filesystem_activity(path)
+        if let Some(touched) = activity
             && now - touched < window
         {
             liveness
@@ -467,6 +480,7 @@ mod tests {
             OffsetDateTime::now_utc(),
             Duration::hours(48),
             &ProbeContext::empty(),
+            last_filesystem_activity(dir.path()),
         );
         assert!(liveness.is_live(), "a just-created dir is recent activity");
         assert!(liveness.reasons[0].contains("modified"));
@@ -480,6 +494,7 @@ mod tests {
             OffsetDateTime::now_utc(),
             Duration::ZERO,
             &ProbeContext::empty(),
+            last_filesystem_activity(dir.path()),
         );
         assert!(!liveness.is_live(), "reasons: {:?}", liveness.reasons);
     }
@@ -496,6 +511,7 @@ mod tests {
             OffsetDateTime::now_utc(),
             Duration::ZERO,
             &probes,
+            last_filesystem_activity(dir.path()),
         );
         assert!(liveness.is_live());
         assert!(
@@ -516,7 +532,13 @@ mod tests {
             process_cwds: vec![(7, sibling)],
             ..Default::default()
         };
-        let liveness = check_liveness(&tree, OffsetDateTime::now_utc(), Duration::ZERO, &probes);
+        let liveness = check_liveness(
+            &tree,
+            OffsetDateTime::now_utc(),
+            Duration::ZERO,
+            &probes,
+            last_filesystem_activity(&tree),
+        );
         assert!(
             !liveness.is_live(),
             "a sibling path sharing a name prefix is not inside the tree: {:?}",
@@ -536,6 +558,7 @@ mod tests {
             OffsetDateTime::now_utc(),
             Duration::ZERO,
             &probes,
+            last_filesystem_activity(dir.path()),
         );
         assert!(liveness.is_live());
         assert!(liveness.reasons[0].contains("reservation"));

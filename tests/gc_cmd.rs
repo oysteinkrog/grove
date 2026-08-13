@@ -811,6 +811,50 @@ fn a_second_run_after_applying_reports_the_advisory_categories_only() {
 }
 
 #[test]
+fn inspecting_a_tree_does_not_make_it_look_recently_used() {
+    // `git status` normally refreshes the on-disk index, which bumps the very
+    // mtime the liveness guard reads. Left unchecked, gc's own inspection would
+    // mark every tree it looked at as a live session — and blocked findings look
+    // exactly like correct caution, so nothing would ever be collected again.
+    let fx = Fixture::new();
+    let wt = fx.worktree("wt-quiet", "feature/quiet");
+
+    let before = grove::gc::guards::last_filesystem_activity(&wt)
+        .expect("a fresh worktree has a timestamp");
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    grove::gc::guards::inspect_tree(&wt).expect("inspection should succeed");
+    let after = grove::gc::guards::last_filesystem_activity(&wt).unwrap();
+
+    assert_eq!(
+        before, after,
+        "inspecting a tree must leave its activity timestamp alone"
+    );
+}
+
+#[test]
+fn liveness_uses_the_timestamp_it_was_given_not_a_fresh_reading() {
+    // The other half of the same defence: the scanners sample activity before
+    // touching a tree and hand it to the guard, so even a git command that did
+    // write could not fake a live session.
+    let fx = Fixture::new();
+    let wt = fx.worktree("wt-old", "feature/old");
+    let long_ago = OffsetDateTime::now_utc() - Duration::days(30);
+
+    let liveness = grove::gc::guards::check_liveness(
+        &wt,
+        OffsetDateTime::now_utc(),
+        Duration::hours(48),
+        &ProbeContext::empty(),
+        Some(long_ago),
+    );
+    assert!(
+        !liveness.reasons.iter().any(|r| r.starts_with("modified")),
+        "a just-created directory reported as 30 days old must not read as modified: {:?}",
+        liveness.reasons
+    );
+}
+
+#[test]
 fn scanning_survives_a_worktree_it_cannot_read() {
     let fx = Fixture::new();
     let mut projects = BTreeMap::new();

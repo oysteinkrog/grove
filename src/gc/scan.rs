@@ -9,7 +9,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use time::Duration;
+use time::{Duration, OffsetDateTime};
 
 use crate::registry::Registry;
 
@@ -182,6 +182,7 @@ impl Scanner<'_> {
                 continue;
             }
 
+            let activity = guards::last_filesystem_activity(&wt.path);
             let mut finding = Finding::new(Category::UnregisteredWorktree, label, &wt.path);
             match wt.branch.as_deref() {
                 Some(branch) => finding = finding.detail(format!("branch {branch}")),
@@ -205,7 +206,7 @@ impl Scanner<'_> {
                 }
             }
 
-            finding = self.apply_liveness(finding);
+            finding = self.apply_liveness(finding, activity);
             plan.findings.push(finding);
         }
     }
@@ -274,6 +275,7 @@ impl Scanner<'_> {
                 .map(|e| guards::humanize_age(self.opts.now - e))
                 .unwrap_or_else(|| "unknown".to_string());
 
+            let activity = guards::last_filesystem_activity(&project.path);
             let mut finding = Finding::new(Category::ExpiredEphemeral, tag, &project.path)
                 .detail(format!("branch {}", project.branch))
                 .detail(format!("TTL elapsed {expired_for}"));
@@ -299,7 +301,7 @@ impl Scanner<'_> {
                 }
             }
 
-            plan.findings.push(self.apply_liveness(finding));
+            plan.findings.push(self.apply_liveness(finding, activity));
         }
 
         self.scan_unregistered_scratch(plan);
@@ -330,8 +332,8 @@ impl Scanner<'_> {
         dirs.sort();
 
         for path in dirs {
-            let age = self.age_of(&path);
-            let Some(age) = age else {
+            let activity = guards::last_filesystem_activity(&path);
+            let Some(age) = activity.map(|t| self.opts.now - t) else {
                 plan.warn(format!("could not stat {}", path.display()));
                 continue;
             };
@@ -349,7 +351,7 @@ impl Scanner<'_> {
                 finding = finding
                     .detail("not a git tree")
                     .block(["cannot verify contents of a non-git directory".to_string()]);
-                plan.findings.push(self.apply_liveness(finding));
+                plan.findings.push(self.apply_liveness(finding, activity));
                 continue;
             }
 
@@ -370,7 +372,7 @@ impl Scanner<'_> {
                         .block(["worktree state could not be read".to_string()]);
                 }
             }
-            plan.findings.push(self.apply_liveness(finding));
+            plan.findings.push(self.apply_liveness(finding, activity));
         }
     }
 
@@ -407,7 +409,8 @@ impl Scanner<'_> {
             let label = dir_label(path);
             self.progress(index + 1, total, &format!("harness {label}"));
 
-            let age = self.age_of(path);
+            let activity = guards::last_filesystem_activity(path);
+            let age = activity.map(|t| self.opts.now - t);
             let mut finding = Finding::new(Category::HarnessWorktree, label, path);
             if let Some(age) = age {
                 finding = finding.detail(format!("last touched {}", guards::humanize_age(age)));
@@ -436,7 +439,7 @@ impl Scanner<'_> {
                 }
             }
 
-            plan.findings.push(self.apply_liveness(finding));
+            plan.findings.push(self.apply_liveness(finding, activity));
         }
     }
 
@@ -482,7 +485,11 @@ impl Scanner<'_> {
 
     /// Add a blocker when somebody appears to be using the tree. Applied to
     /// every destructive category, on top of whatever the tree's git state says.
-    pub fn apply_liveness(&self, finding: Finding) -> Finding {
+    ///
+    /// `activity` is the tree's last filesystem activity as sampled *before*
+    /// this scan touched it, so gc's own inspection cannot masquerade as a live
+    /// session.
+    pub fn apply_liveness(&self, finding: Finding, activity: Option<OffsetDateTime>) -> Finding {
         if matches!(finding.remedy, Remedy::ReportOnly) && finding.blockers.is_empty() {
             return finding;
         }
@@ -491,6 +498,7 @@ impl Scanner<'_> {
             self.opts.now,
             self.opts.liveness_window,
             self.probes,
+            activity,
         );
         if liveness.is_live() {
             return finding.block(liveness.reasons.into_iter().map(|r| format!("in use: {r}")));

@@ -126,6 +126,7 @@ pub(super) fn scan(scanner: &Scanner<'_>, plan: &mut GcPlan) {
             eprintln!("[gc] ({}/{total}) merge state of {tag}", index + 1);
         }
 
+        let activity = guards::last_filesystem_activity(&project.path);
         let safety = match guards::inspect_tree(&project.path) {
             Ok(safety) => safety,
             Err(e) => {
@@ -169,6 +170,7 @@ pub(super) fn scan(scanner: &Scanner<'_>, plan: &mut GcPlan) {
             scanner.opts.now,
             scanner.opts.liveness_window,
             scanner.probes,
+            activity,
         );
         if liveness.is_live() {
             finding = finding.detail(format!("still in use: {}", liveness.reasons.join("; ")));
