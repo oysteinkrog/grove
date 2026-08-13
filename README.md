@@ -100,6 +100,10 @@ terminal and reports only when it does not.
 | 7 | Merged-and-clean project | lists it as a `grove done` candidate |
 | 8 | `.archive` contents | reports age and size |
 
+Category 7 compares against the remote-tracking refs already on disk and never
+fetches, so an audit is a read-only local operation. A stale `origin/...` makes
+it under-report: run `git fetch` first if you want the merged list to be sharp.
+
 There is no `--force`. Before removing anything gc re-checks the tree with
 `git status --porcelain --untracked-files=all`, confirms HEAD is reachable from
 some remote, and skips any tree that looks in use — recent commits or mtime, a
