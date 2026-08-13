@@ -75,11 +75,37 @@ The legacy single-repo layout is migrated automatically on first run.
 | `grove rename <old> <new>` | Rename a project |
 | `grove freeze <tag>` / `thaw` | Exclude from `grove launch` |
 | `grove done <tag>` | Remove a worktree (safety-checked) |
+| `grove gc [--dry-run] [--yes]` | Audit the work_dir and clean up what is safe |
 | `grove launch` | Open terminal tabs for projects |
 | `grove repo {add,list,show,remove,default,path}` | Manage repos |
 
 Add `--repo <id>` to any command to target a specific repo. Run
 `grove <cmd> --help` for full flag reference.
+
+## Garbage collection
+
+`grove gc` sorts a work_dir that has drifted into eight numbered categories and
+fixes the four that are pure bookkeeping. `--dry-run` reports and stops; `--yes`
+applies without asking; with neither, gc asks item by item when it has a
+terminal and reports only when it does not.
+
+| # | Finding | What gc does |
+|---|---|---|
+| 1 | Registry entry whose worktree is gone | drops the entry with `--yes` |
+| 2 | Unregistered worktree under work_dir | asks to adopt or remove; never swept by `--yes` |
+| 3 | Top-level directory that is not a worktree | report only |
+| 4 | Expired ephemeral under `.scratch` | removes with `--yes` when clean, pushed and idle |
+| 5 | Stale harness worktree under `.claude/worktrees` | removes with `--yes` when clean, stale and idle |
+| 6 | Prunable git worktree metadata | prunes with `--yes` |
+| 7 | Merged-and-clean project | lists it as a `grove done` candidate |
+| 8 | `.archive` contents | reports age and size |
+
+There is no `--force`. Before removing anything gc re-checks the tree with
+`git status --porcelain --untracked-files=all`, confirms HEAD is reachable from
+some remote, and skips any tree that looks in use — recent commits or mtime, a
+live process working directory inside it, or an agent-mail file reservation
+covering it. Deleted branches are appended to
+`<work_dir>/.archive/deleted-branches.txt` as `DIR BRANCH SHA`.
 
 ## Shell integration
 
