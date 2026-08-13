@@ -8,7 +8,9 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use rayon::prelude::*;
 use time::{Duration, OffsetDateTime};
 
 use crate::registry::Registry;
@@ -114,6 +116,55 @@ impl Scanner<'_> {
         }
     }
 
+    /// Inspect independent trees concurrently, reporting each as it finishes.
+    ///
+    /// Every tree costs a `git status` walk plus a remote-containment query:
+    /// tens of seconds on a small worktree, minutes on one carrying build
+    /// output. Run one at a time over a real work_dir that adds up to hours,
+    /// nearly all of it spent waiting on the filesystem. The work per tree is
+    /// independent, so it overlaps on a small pool — wide enough to hide the
+    /// waiting, narrow enough to leave the machine to whoever else is building
+    /// on it. Results come back in input order regardless of finish order.
+    pub fn inspect_concurrently<T, R>(
+        &self,
+        items: &[T],
+        label: &str,
+        inspect: impl Fn(&T) -> R + Sync,
+    ) -> Vec<R>
+    where
+        T: Sync,
+        R: Send,
+    {
+        let total = items.len();
+        if total == 0 {
+            return Vec::new();
+        }
+        let done = AtomicUsize::new(0);
+        let run = || {
+            items
+                .par_iter()
+                .map(|item| {
+                    let result = inspect(item);
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if self.opts.progress {
+                        eprintln!("[gc] {label} {n}/{total}");
+                    }
+                    result
+                })
+                .collect()
+        };
+
+        match rayon::ThreadPoolBuilder::new()
+            .num_threads(self.opts.scan_threads.max(1))
+            .build()
+        {
+            Ok(pool) => pool.install(run),
+            // A pool that will not build is no reason to skip the scan; fall
+            // back to whatever rayon's global pool offers.
+            Err(_) => run(),
+        }
+    }
+
     /// Paths of every registered project, for containment tests.
     pub fn registered_paths(&self) -> BTreeSet<PathBuf> {
         self.registry
@@ -171,19 +222,20 @@ impl Scanner<'_> {
             ));
         }
 
-        let total = candidates.len();
-        for (index, wt) in candidates.iter().enumerate() {
-            let label = dir_label(&wt.path);
-            self.progress(index + 1, total, &format!("worktree {label}"));
+        // Worktrees whose directory is gone belong to category 6's prune, not
+        // to an adopt-or-remove prompt.
+        let candidates: Vec<&WorktreeEntry> = candidates
+            .into_iter()
+            .filter(|wt| wt.path.is_dir())
+            .collect();
 
-            if !wt.path.is_dir() {
-                // Directory is gone but the metadata lingers; category 6's prune
-                // is the remedy, not an adopt-or-done prompt.
-                continue;
-            }
-
+        let findings = self.inspect_concurrently(&candidates, "worktree", |wt| {
             let activity = guards::last_filesystem_activity(&wt.path);
-            let mut finding = Finding::new(Category::UnregisteredWorktree, label, &wt.path);
+            let mut finding = Finding::new(
+                Category::UnregisteredWorktree,
+                dir_label(&wt.path),
+                &wt.path,
+            );
             match wt.branch.as_deref() {
                 Some(branch) => finding = finding.detail(format!("branch {branch}")),
                 None => finding = finding.detail("detached HEAD"),
@@ -206,9 +258,9 @@ impl Scanner<'_> {
                 }
             }
 
-            finding = self.apply_liveness(finding, activity);
-            plan.findings.push(finding);
-        }
+            self.apply_liveness(finding, activity)
+        });
+        plan.findings.extend(findings);
     }
 
     // ── category 3 ───────────────────────────────────────────────────────────
@@ -404,14 +456,10 @@ impl Scanner<'_> {
             .collect();
         dirs.sort();
 
-        let total = dirs.len();
-        for (index, path) in dirs.iter().enumerate() {
-            let label = dir_label(path);
-            self.progress(index + 1, total, &format!("harness {label}"));
-
+        let findings = self.inspect_concurrently(&dirs, "harness", |path| {
             let activity = guards::last_filesystem_activity(path);
             let age = activity.map(|t| self.opts.now - t);
-            let mut finding = Finding::new(Category::HarnessWorktree, label, path);
+            let mut finding = Finding::new(Category::HarnessWorktree, dir_label(path), path);
             if let Some(age) = age {
                 finding = finding.detail(format!("last touched {}", guards::humanize_age(age)));
             }
@@ -439,8 +487,9 @@ impl Scanner<'_> {
                 }
             }
 
-            plan.findings.push(self.apply_liveness(finding, activity));
-        }
+            self.apply_liveness(finding, activity)
+        });
+        plan.findings.extend(findings);
     }
 
     // ── category 6 ───────────────────────────────────────────────────────────

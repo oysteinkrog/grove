@@ -236,6 +236,12 @@ pub struct GcOptions {
     pub max_subject_probe_commits: usize,
     /// Emit per-item progress to stderr.
     pub progress: bool,
+    /// How many trees to inspect at once. Each tree costs a `git status` walk
+    /// plus a remote-containment query, both dominated by waiting on the
+    /// filesystem, so overlapping them is most of the difference between a
+    /// routine run and an afternoon. Kept small on purpose: this machine
+    /// usually has other people's builds on it.
+    pub scan_threads: usize,
 }
 
 impl Default for GcOptions {
@@ -248,6 +254,7 @@ impl Default for GcOptions {
             query_pr_state: true,
             max_subject_probe_commits: 40,
             progress: true,
+            scan_threads: 4,
         }
     }
 }
@@ -262,6 +269,7 @@ impl GcOptions {
             harness_stale_after: Duration::ZERO,
             query_pr_state: false,
             progress: false,
+            scan_threads: 1,
             ..Self::default()
         }
     }

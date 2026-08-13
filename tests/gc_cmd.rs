@@ -716,7 +716,11 @@ fn a_long_rebased_branch_is_still_recognised_as_merged() {
     }
 
     // Diverge main first so the replayed commits cannot reuse their SHAs.
-    commit(&fx.main_repo, "unrelated.rs", "an unrelated upstream change");
+    commit(
+        &fx.main_repo,
+        "unrelated.rs",
+        "an unrelated upstream change",
+    );
     git(
         &fx.main_repo,
         &["cherry-pick", "feature/long~5..feature/long"],
@@ -851,6 +855,47 @@ fn a_second_run_after_applying_reports_the_advisory_categories_only() {
 }
 
 #[test]
+fn a_concurrent_scan_reports_the_same_thing_a_serial_one_does() {
+    let fx = Fixture::new();
+    for n in 1..=6 {
+        fx.worktree(&format!("wt-{n}"), &format!("feature/{n}"));
+    }
+    // Something for the parallel path to carry back out besides findings.
+    std::fs::create_dir_all(fx.work_dir.join("wt-broken")).unwrap();
+    let mut projects = BTreeMap::new();
+    projects.insert(
+        "wt-broken".to_string(),
+        project(&fx.work_dir.join("wt-broken"), "feature/broken", None),
+    );
+    fx.save_registry(projects);
+
+    let serial = fx.plan(&GcOptions {
+        scan_threads: 1,
+        ..GcOptions::for_tests()
+    });
+    let concurrent = fx.plan(&GcOptions {
+        scan_threads: 4,
+        ..GcOptions::for_tests()
+    });
+
+    assert_eq!(
+        labels(&serial, Category::UnregisteredWorktree),
+        labels(&concurrent, Category::UnregisteredWorktree),
+        "findings must come back in input order whatever the finish order"
+    );
+    assert_eq!(
+        labels(&concurrent, Category::UnregisteredWorktree).len(),
+        6,
+        "every tree exactly once"
+    );
+    assert_eq!(
+        serial.warnings, concurrent.warnings,
+        "warnings raised inside a worker must survive the trip back"
+    );
+    assert!(!concurrent.warnings.is_empty());
+}
+
+#[test]
 fn inspecting_a_tree_does_not_make_it_look_recently_used() {
     // `git status` normally refreshes the on-disk index, which bumps the very
     // mtime the liveness guard reads. Left unchecked, gc's own inspection would
@@ -859,8 +904,8 @@ fn inspecting_a_tree_does_not_make_it_look_recently_used() {
     let fx = Fixture::new();
     let wt = fx.worktree("wt-quiet", "feature/quiet");
 
-    let before = grove::gc::guards::last_filesystem_activity(&wt)
-        .expect("a fresh worktree has a timestamp");
+    let before =
+        grove::gc::guards::last_filesystem_activity(&wt).expect("a fresh worktree has a timestamp");
     std::thread::sleep(std::time::Duration::from_millis(1100));
     grove::gc::guards::inspect_tree(&wt).expect("inspection should succeed");
     let after = grove::gc::guards::last_filesystem_activity(&wt).unwrap();

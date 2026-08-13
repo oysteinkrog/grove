@@ -120,32 +120,31 @@ pub(super) fn scan(scanner: &Scanner<'_>, plan: &mut GcPlan) {
         .filter(|(_, p)| !p.is_expired(scanner.opts.now))
         .collect();
 
-    let total = projects.len();
-    for (index, (tag, project)) in projects.iter().enumerate() {
-        if scanner.opts.progress {
-            eprintln!("[gc] ({}/{total}) merge state of {tag}", index + 1);
-        }
+    // Each project is inspected independently, so the run overlaps them and
+    // carries any warnings back out rather than writing to the plan in place.
+    let results = scanner.inspect_concurrently(&projects, "merge state", |(tag, project)| {
+        let mut warnings = Vec::new();
 
         let activity = guards::last_filesystem_activity(&project.path);
         let safety = match guards::inspect_tree(&project.path) {
             Ok(safety) => safety,
             Err(e) => {
-                plan.warn(format!("{tag}: could not read worktree state ({e})"));
-                continue;
+                warnings.push(format!("{tag}: could not read worktree state ({e})"));
+                return (None, warnings);
             }
         };
         // "Merged *and clean*" — a project with local edits is not a done
         // candidate no matter what landed upstream.
         if safety.dirty {
-            continue;
+            return (None, warnings);
         }
 
-        let state = merge_state(scanner, &project.path, &project.base, plan, tag);
+        let state = merge_state(scanner, &project.path, &project.base, &mut warnings, tag);
         if !state.is_absorbed() {
-            continue;
+            return (None, warnings);
         }
 
-        let mut finding = Finding::new(Category::MergedProject, *tag, &project.path)
+        let mut finding = Finding::new(Category::MergedProject, tag.as_str(), &project.path)
             .detail(format!(
                 "branch {} vs base {}",
                 project.branch, project.base
@@ -177,7 +176,12 @@ pub(super) fn scan(scanner: &Scanner<'_>, plan: &mut GcPlan) {
         }
 
         finding = finding.detail(format!("run: grove done {tag}"));
-        plan.findings.push(finding);
+        (Some(finding), warnings)
+    });
+
+    for (finding, warnings) in results {
+        plan.findings.extend(finding);
+        plan.warnings.extend(warnings);
     }
 }
 
@@ -185,7 +189,7 @@ fn merge_state(
     scanner: &Scanner<'_>,
     path: &std::path::Path,
     base: &str,
-    plan: &mut GcPlan,
+    warnings: &mut Vec<String>,
     tag: &str,
 ) -> MergeState {
     if exec::git(
@@ -209,7 +213,7 @@ fn merge_state(
     let cherry = match exec::git(path, &["cherry", base, "HEAD"], CHERRY_TIMEOUT) {
         Ok(text) => parse_cherry(&text),
         Err(e) => {
-            plan.warn(format!("{tag}: patch-id comparison failed ({e})"));
+            warnings.push(format!("{tag}: patch-id comparison failed ({e})"));
             return MergeState::Unknown {
                 reason: "patch-id comparison failed".to_string(),
             };
