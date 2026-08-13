@@ -89,7 +89,11 @@ pub fn render(plan: &GcPlan, mode: Mode, layout: &Layout) -> String {
 pub fn summary(plan: &GcPlan, mode: Mode) -> String {
     let total = plan.findings.len();
     let auto = plan.auto_applicable().count();
-    let blocked = plan.findings.iter().filter(|f| !f.blockers.is_empty()).count();
+    let blocked = plan
+        .findings
+        .iter()
+        .filter(|f| !f.blockers.is_empty())
+        .count();
 
     if total == 0 {
         return "Nothing to report: the work_dir is clean.".to_string();
@@ -175,9 +179,16 @@ mod tests {
             ),
         );
         plan.findings.push(
-            Finding::new(Category::HarnessWorktree, "agent-x", "/c/work/desktop/master/.claude/worktrees/agent-x")
-                .remedy(Remedy::RemoveHarnessWorktree { branch: None, head: None })
-                .block(["in use: process 12 has its cwd inside the tree".to_string()]),
+            Finding::new(
+                Category::HarnessWorktree,
+                "agent-x",
+                "/c/work/desktop/master/.claude/worktrees/agent-x",
+            )
+            .remedy(Remedy::RemoveHarnessWorktree {
+                branch: None,
+                head: None,
+            })
+            .block(["in use: process 12 has its cwd inside the tree".to_string()]),
         );
         plan.findings.push(Finding::new(
             Category::ForeignDirectory,

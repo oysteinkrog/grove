@@ -66,7 +66,12 @@ impl TreeSafety {
 pub fn inspect_tree(path: &Path) -> Result<TreeSafety, String> {
     let porcelain = exec::git(
         path,
-        &["status", "--porcelain", "--untracked-files=all", "--no-renames"],
+        &[
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--no-renames",
+        ],
         STATUS_GIT_TIMEOUT,
     )?;
     let dirty_entries = porcelain.lines().filter(|l| !l.trim().is_empty()).count();
@@ -76,10 +81,14 @@ pub fn inspect_tree(path: &Path) -> Result<TreeSafety, String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let branch = exec::git(path, &["symbolic-ref", "--short", "-q", "HEAD"], QUICK_GIT_TIMEOUT)
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let branch = exec::git(
+        path,
+        &["symbolic-ref", "--short", "-q", "HEAD"],
+        QUICK_GIT_TIMEOUT,
+    )
+    .ok()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty());
 
     // A tree with no commits at all has nothing to lose. Otherwise HEAD must be
     // reachable from some remote-tracking branch — that covers pushed branches,
@@ -88,8 +97,12 @@ pub fn inspect_tree(path: &Path) -> Result<TreeSafety, String> {
     let unpushed = match &head {
         None => false,
         Some(oid) => {
-            let contains = exec::git(path, &["branch", "-r", "--contains", oid], QUICK_GIT_TIMEOUT)
-                .unwrap_or_default();
+            let contains = exec::git(
+                path,
+                &["branch", "-r", "--contains", oid],
+                QUICK_GIT_TIMEOUT,
+            )
+            .unwrap_or_default();
             contains.trim().is_empty()
         }
     };
@@ -130,8 +143,10 @@ pub struct ProbeContext {
 impl ProbeContext {
     /// Gather process working directories and agent-mail reservations.
     pub fn gather(project_root: &Path) -> Self {
-        let mut cx = Self::default();
-        cx.process_cwds = scan_process_cwds();
+        let mut cx = Self {
+            process_cwds: scan_process_cwds(),
+            ..Default::default()
+        };
         if cx.process_cwds.is_empty() {
             cx.notes
                 .push("no process working directories readable (/proc unavailable); the live-session guard is reduced to mtime and commit age".to_string());
@@ -239,7 +254,9 @@ pub fn resolve_git_dir(path: &Path) -> Option<PathBuf> {
         return Some(dot_git);
     }
     let contents = std::fs::read_to_string(&dot_git).ok()?;
-    let pointer = contents.lines().find_map(|l| l.trim().strip_prefix("gitdir:"))?;
+    let pointer = contents
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("gitdir:"))?;
     let pointer = PathBuf::from(pointer.trim());
     if pointer.is_absolute() {
         Some(pointer)
@@ -290,7 +307,9 @@ fn probe_reservations(project_root: &Path) -> Result<BTreeSet<PathBuf>, String> 
         Some(project_root),
         RESERVATION_PROBE_TIMEOUT,
     )
-    .map_err(|e| format!("agent-mail reservations unavailable ({e}); live-session guard reduced"))?;
+    .map_err(|e| {
+        format!("agent-mail reservations unavailable ({e}); live-session guard reduced")
+    })?;
 
     if !out.success {
         let detail = out
@@ -307,7 +326,9 @@ fn probe_reservations(project_root: &Path) -> Result<BTreeSet<PathBuf>, String> 
     }
 
     let value: serde_json::Value = serde_json::from_str(&out.stdout).map_err(|e| {
-        format!("agent-mail reservations returned unparseable JSON ({e}); live-session guard reduced")
+        format!(
+            "agent-mail reservations returned unparseable JSON ({e}); live-session guard reduced"
+        )
     })?;
     let mut paths = BTreeSet::new();
     collect_paths(&value, &mut paths);
@@ -477,7 +498,11 @@ mod tests {
             &probes,
         );
         assert!(liveness.is_live());
-        assert!(liveness.reasons[0].contains("4242"), "{:?}", liveness.reasons);
+        assert!(
+            liveness.reasons[0].contains("4242"),
+            "{:?}",
+            liveness.reasons
+        );
     }
 
     #[test]
@@ -527,7 +552,11 @@ mod tests {
         collect_paths(&value, &mut out);
         assert!(out.contains(&PathBuf::from("/c/work/desktop/wt-a/src")));
         assert!(out.contains(&PathBuf::from("/c/work/desktop")));
-        assert_eq!(out.len(), 2, "non-path strings must not be collected: {out:?}");
+        assert_eq!(
+            out.len(),
+            2,
+            "non-path strings must not be collected: {out:?}"
+        );
     }
 
     #[test]
@@ -537,11 +566,7 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         let tree = dir.path().join("wt");
         std::fs::create_dir_all(&tree).unwrap();
-        std::fs::write(
-            tree.join(".git"),
-            format!("gitdir: {}\n", target.display()),
-        )
-        .unwrap();
+        std::fs::write(tree.join(".git"), format!("gitdir: {}\n", target.display())).unwrap();
         assert_eq!(resolve_git_dir(&tree).as_deref(), Some(target.as_path()));
     }
 

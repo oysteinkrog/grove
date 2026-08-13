@@ -195,7 +195,11 @@ mod tests {
             .in_category(Category::ArchiveContents)
             .find(|f| f.label == "(total)")
             .unwrap();
-        assert!(total.details[0].contains("2 entries"), "{:?}", total.details);
+        assert!(
+            total.details[0].contains("2 entries"),
+            "{:?}",
+            total.details
+        );
         assert!(total.details[0].contains("3.0 KB"), "{:?}", total.details);
         assert!(
             plan.in_category(Category::ArchiveContents)

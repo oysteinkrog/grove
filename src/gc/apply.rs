@@ -76,8 +76,12 @@ fn remove_tree(
 ) -> Result<String, String> {
     let path = &finding.path;
 
-    let safety = guards::inspect_tree(path)
-        .map_err(|e| format!("could not re-check {} before removing it: {e}", path.display()))?;
+    let safety = guards::inspect_tree(path).map_err(|e| {
+        format!(
+            "could not re-check {} before removing it: {e}",
+            path.display()
+        )
+    })?;
     let blockers = safety.blockers();
     if !blockers.is_empty() {
         return Err(format!(
@@ -147,14 +151,17 @@ fn remove_worktree_dir(layout: &Layout, path: &Path) -> Result<(), String> {
 }
 
 fn prune(layout: &Layout) -> Result<String, String> {
-    exec::git(
+    exec::git_streams(
         &layout.main_repo,
         &["worktree", "prune", "--verbose"],
         MUTATE_TIMEOUT,
     )
     .map(|out| {
         let count = out.lines().filter(|l| !l.trim().is_empty()).count();
-        format!("pruned {count} stale worktree metadata entr{}", if count == 1 { "y" } else { "ies" })
+        format!(
+            "pruned {count} stale worktree metadata entr{}",
+            if count == 1 { "y" } else { "ies" }
+        )
     })
     .map_err(|e| format!("git worktree prune failed: {e}"))
 }
@@ -201,12 +208,11 @@ mod tests {
             work_dir: dir.path().to_path_buf(),
             main_repo: dir.path().join("master"),
         };
-        let finding =
-            Finding::new(Category::StaleRegistryEntry, "gone", "/nowhere/gone").remedy(
-                Remedy::DropRegistryEntry {
-                    tag: "gone".to_string(),
-                },
-            );
+        let finding = Finding::new(Category::StaleRegistryEntry, "gone", "/nowhere/gone").remedy(
+            Remedy::DropRegistryEntry {
+                tag: "gone".to_string(),
+            },
+        );
 
         let message = apply(&finding, &layout, &grove_dir).unwrap();
         assert!(message.contains("gone"), "{message}");
@@ -253,7 +259,13 @@ mod tests {
         std::fs::create_dir_all(&tree).unwrap();
         for args in [
             vec!["init", "-b", "main", tree.to_str().unwrap()],
-            vec!["-C", tree.to_str().unwrap(), "config", "user.email", "t@t.com"],
+            vec![
+                "-C",
+                tree.to_str().unwrap(),
+                "config",
+                "user.email",
+                "t@t.com",
+            ],
             vec!["-C", tree.to_str().unwrap(), "config", "user.name", "T"],
         ] {
             assert!(
@@ -281,7 +293,10 @@ mod tests {
 
         let err = apply(&finding, &layout, &dir.path().join(".grove")).unwrap_err();
         assert!(err.contains("no longer safe to remove"), "{err}");
-        assert!(tree.exists(), "a tree that failed its re-check must survive");
+        assert!(
+            tree.exists(),
+            "a tree that failed its re-check must survive"
+        );
     }
 
     #[test]

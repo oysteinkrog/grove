@@ -285,7 +285,10 @@ impl Scanner<'_> {
                         .block(safety.blockers())
                         .remedy(Remedy::RemoveEphemeral {
                             tag: Some(tag.clone()),
-                            branch: safety.branch.clone().or_else(|| Some(project.branch.clone())),
+                            branch: safety
+                                .branch
+                                .clone()
+                                .or_else(|| Some(project.branch.clone())),
                             head: safety.head.clone(),
                         });
                 }
@@ -412,7 +415,8 @@ impl Scanner<'_> {
 
             let stale = age.is_some_and(|a| a >= self.opts.harness_stale_after);
             if !stale {
-                finding = finding.block(["still fresh; a live agent session may own it".to_string()]);
+                finding =
+                    finding.block(["still fresh; a live agent session may own it".to_string()]);
             }
 
             match guards::inspect_tree(path) {
@@ -441,7 +445,7 @@ impl Scanner<'_> {
     /// Worktree administrative entries git itself considers prunable. Reported
     /// as a single finding because one `git worktree prune` clears all of them.
     fn scan_prunable_metadata(&self, plan: &mut GcPlan) {
-        let output = exec::git(
+        let output = exec::git_streams(
             &self.layout.main_repo,
             &["worktree", "prune", "--dry-run", "--verbose"],
             QUICK_GIT_TIMEOUT,
@@ -463,7 +467,11 @@ impl Scanner<'_> {
             &self.layout.main_repo,
         )
         .remedy(Remedy::PruneWorktreeMetadata)
-        .detail(format!("{} stale administrative entr{}", lines.len(), if lines.len() == 1 { "y" } else { "ies" }));
+        .detail(format!(
+            "{} stale administrative entr{}",
+            lines.len(),
+            if lines.len() == 1 { "y" } else { "ies" }
+        ));
         for line in lines {
             finding = finding.detail(line);
         }

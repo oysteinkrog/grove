@@ -197,11 +197,7 @@ fn prompt(reader: &mut impl BufRead, question: &str, default: &str) -> anyhow::R
     })
 }
 
-fn prompt_line(
-    reader: &mut impl BufRead,
-    question: &str,
-    default: &str,
-) -> anyhow::Result<String> {
+fn prompt_line(reader: &mut impl BufRead, question: &str, default: &str) -> anyhow::Result<String> {
     print!("{question}");
     std::io::stdout().flush()?;
     let mut line = String::new();
@@ -279,14 +275,20 @@ mod tests {
     fn anything_unrecognised_means_skip() {
         for input in ["\n", "no\n", "wat\n"] {
             let mut reader = Cursor::new(input.as_bytes().to_vec());
-            assert!(matches!(prompt(&mut reader, "?", "n").unwrap(), Answer::Skip));
+            assert!(matches!(
+                prompt(&mut reader, "?", "n").unwrap(),
+                Answer::Skip
+            ));
         }
     }
 
     #[test]
     fn quit_is_distinct_from_skip() {
         let mut reader = Cursor::new(b"q\n".to_vec());
-        assert!(matches!(prompt(&mut reader, "?", "n").unwrap(), Answer::Quit));
+        assert!(matches!(
+            prompt(&mut reader, "?", "n").unwrap(),
+            Answer::Quit
+        ));
     }
 
     #[test]

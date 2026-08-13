@@ -145,7 +145,10 @@ pub(super) fn scan(scanner: &Scanner<'_>, plan: &mut GcPlan) {
         }
 
         let mut finding = Finding::new(Category::MergedProject, *tag, &project.path)
-            .detail(format!("branch {} vs base {}", project.branch, project.base))
+            .detail(format!(
+                "branch {} vs base {}",
+                project.branch, project.base
+            ))
             .detail(state.describe())
             .detail("clean worktree");
 
@@ -183,8 +186,12 @@ fn merge_state(
     plan: &mut GcPlan,
     tag: &str,
 ) -> MergeState {
-    if exec::git(path, &["rev-parse", "--verify", "-q", &format!("{base}^{{commit}}")], QUICK_GIT_TIMEOUT)
-        .is_err()
+    if exec::git(
+        path,
+        &["rev-parse", "--verify", "-q", &format!("{base}^{{commit}}")],
+        QUICK_GIT_TIMEOUT,
+    )
+    .is_err()
     {
         return MergeState::Unknown {
             reason: format!("base '{base}' does not resolve in this worktree"),
@@ -290,13 +297,16 @@ fn pull_request_state(main_repo: &std::path::Path, branch: &str) -> Result<Vec<S
         ));
     }
 
-    let parsed: Vec<serde_json::Value> =
-        serde_json::from_str(out.stdout.trim()).map_err(|e| format!("gh output unreadable: {e}"))?;
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(out.stdout.trim())
+        .map_err(|e| format!("gh output unreadable: {e}"))?;
     Ok(parsed
         .iter()
         .map(|pr| {
             let number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-            let state = pr.get("state").and_then(|s| s.as_str()).unwrap_or("UNKNOWN");
+            let state = pr
+                .get("state")
+                .and_then(|s| s.as_str())
+                .unwrap_or("UNKNOWN");
             format!("#{number} {state}")
         })
         .collect())
@@ -336,7 +346,10 @@ mod tests {
 
     #[test]
     fn subject_fallback_reports_the_shortfall() {
-        assert_eq!(subject_verdict(5, 2), MergeState::NotMerged { remaining: 3 });
+        assert_eq!(
+            subject_verdict(5, 2),
+            MergeState::NotMerged { remaining: 3 }
+        );
     }
 
     #[test]

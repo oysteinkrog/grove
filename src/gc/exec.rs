@@ -131,6 +131,23 @@ pub fn git(cwd: &Path, args: &[&str], timeout: Duration) -> Result<String, Strin
     }
 }
 
+/// Like [`git`], but returns stdout and stderr together.
+///
+/// `git worktree prune --verbose` announces what it removed on *stderr*, so a
+/// stdout-only read reports a clean repo no matter how much stale metadata is
+/// there. Any git command whose payload is diagnostics needs both streams.
+pub fn git_streams(cwd: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
+    match run("git", args_with_c(cwd, args).as_slice(), None, timeout) {
+        Ok(out) if out.success => Ok(format!("{}{}", out.stdout, out.stderr)),
+        Ok(out) => Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            out.stderr.trim().lines().next().unwrap_or("(no stderr)")
+        )),
+        Err(e) => Err(format!("git {}: {e}", args.join(" "))),
+    }
+}
+
 fn args_with_c<'a>(cwd: &'a Path, args: &[&'a str]) -> Vec<&'a str> {
     let mut all = Vec::with_capacity(args.len() + 2);
     all.push("-C");
@@ -158,7 +175,13 @@ mod tests {
 
     #[test]
     fn missing_program_is_a_spawn_error() {
-        let err = run("grove-no-such-binary-xyz", &[], None, Duration::from_secs(5)).unwrap_err();
+        let err = run(
+            "grove-no-such-binary-xyz",
+            &[],
+            None,
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
         assert!(matches!(err, ExecError::Spawn(_)), "got {err:?}");
     }
 

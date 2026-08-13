@@ -475,7 +475,11 @@ mod tests {
 
     #[test]
     fn report_only_findings_are_never_applied() {
-        let finding = Finding::new(Category::ForeignDirectory, "sc-support", "/c/work/desktop/x");
+        let finding = Finding::new(
+            Category::ForeignDirectory,
+            "sc-support",
+            "/c/work/desktop/x",
+        );
         assert!(!finding.is_actionable(), "no remedy ⇒ nothing to apply");
     }
 
@@ -486,10 +490,20 @@ mod tests {
             work_dir: dir.path().to_path_buf(),
             main_repo: dir.path().join("master"),
         };
-        log_branch_deletion(&layout, Path::new("/c/work/desktop/wt-a"), "feature/a", "abc123")
-            .unwrap();
-        log_branch_deletion(&layout, Path::new("/c/work/desktop/wt-b"), "feature/b", "def456")
-            .unwrap();
+        log_branch_deletion(
+            &layout,
+            Path::new("/c/work/desktop/wt-a"),
+            "feature/a",
+            "abc123",
+        )
+        .unwrap();
+        log_branch_deletion(
+            &layout,
+            Path::new("/c/work/desktop/wt-b"),
+            "feature/b",
+            "def456",
+        )
+        .unwrap();
 
         let text = std::fs::read_to_string(layout.deleted_branches_log()).unwrap();
         let lines: Vec<&str> = text.lines().collect();
