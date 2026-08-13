@@ -1,0 +1,1335 @@
+[
+  {
+    "path": "/c/work/desktop/autoexport-nested-261",
+    "branch": "",
+    "head": "0bebba4ec304aa3b1721061b20b615a7e8360c2a",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "0bebba4ec304 2026-08-10 test/ui: cover auto-export settings tab",
+    "pushed_on": [],
+    "ahead_master": 479,
+    "ahead_261": 0,
+    "subject_hits": "ancestor",
+    "prs": [],
+    "disposition": "remove",
+    "tag": null,
+    "freeze": false,
+    "rationale": "Detached HEAD, clean, HEAD is literally an ancestor of if/stable/26.1 — fully absorbed."
+  },
+  {
+    "path": "/c/work/desktop/clock-sync",
+    "branch": "clock-sync-reconcile",
+    "head": "a6a0796a94ca97c19c4ade7f66ccc97ba029423a",
+    "dirty": 14,
+    "untracked_root_md": [],
+    "last_commit": "a6a0796a94ca 2026-08-13 vm: keep configured stations in the banner off multi-station",
+    "pushed_on": [],
+    "ahead_master": 30,
+    "ahead_261": 1745,
+    "subject_hits": "0/15",
+    "prs": [],
+    "disposition": "adopt",
+    "tag": "clock-sync",
+    "freeze": false,
+    "rationale": "Live active work — last commit is today, 7 modified + 7 untracked files (review notes, .dev-hive.stale, tmp/), 30 unpushed unique commits none of which have landed upstream. Keep registered, do not freeze."
+  },
+  {
+    "path": "/c/work/desktop/det261",
+    "branch": "DESKTOP-12293-261-determinism",
+    "head": "d6a417d52a2f53b8172c0e3dbaa16bec5f49c22a",
+    "dirty": 6,
+    "untracked_root_md": [],
+    "last_commit": "d6a417d52a2f 2026-08-06 test: fix white-balance interval test's first-frame gate with fake clock",
+    "pushed_on": [],
+    "ahead_master": 307,
+    "ahead_261": 17,
+    "subject_hits": "17/17(via PR)",
+    "prs": [
+      "7683 MERGED"
+    ],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": false,
+    "rationale": "PR #7683 MERGED, content fully absorbed into if/stable/26.1. Dirty state is only 5 BUILD_scratch_lane* build-artifact dirs + a testdata index — clear those and it's a clean removal."
+  },
+  {
+    "path": "/c/work/desktop/dl-recovery",
+    "branch": "feature/DESKTOP-12077-device-lost-recovery",
+    "head": "598704f57eab797d4e40855df33b65deaa8afa67",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "598704f57eab 2026-08-04 video/present: gate preview rebuild after repeated device loss",
+    "pushed_on": [
+      "my/feature/DESKTOP-12077-device-lost-recovery"
+    ],
+    "ahead_master": 7,
+    "ahead_261": 1279,
+    "subject_hits": "7/7",
+    "prs": [
+      "7323 MERGED"
+    ],
+    "disposition": "remove",
+    "tag": null,
+    "freeze": false,
+    "rationale": "PR #7323 MERGED, all 7 commits confirmed present in if/master, clean tree."
+  },
+  {
+    "path": "/c/work/desktop/fix-11846-261",
+    "branch": "fix/DESKTOP-11846-dragdrop-take-26.1",
+    "head": "5fa59997b39a7fef27162e471a01066341418c06",
+    "dirty": 3,
+    "untracked_root_md": [],
+    "last_commit": "5fa59997b39a 2026-07-01 collect: distinguish lost device from unsupported firmware in sync log",
+    "pushed_on": [],
+    "ahead_master": 144,
+    "ahead_261": 0,
+    "subject_hits": "ancestor",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": true,
+    "rationale": "Branch tip is an old stable/26.1 checkpoint with zero own commits — the real DESKTOP-11846 work is uncommitted (AttachedProperties.cs modified + new ModelDragDropAdapter.cs + new test dir), identical diff to fix-11846-master. Twin in-progress worktrees for the same fix on two bases, never committed, no PR."
+  },
+  {
+    "path": "/c/work/desktop/fix-11846-master",
+    "branch": "fix/DESKTOP-11846-dragdrop-take",
+    "head": "8fd2ad8a1b3e5136f6bfde102d5f1b0348458e02",
+    "dirty": 3,
+    "untracked_root_md": [],
+    "last_commit": "8fd2ad8a1b3e 2026-07-01 vm: fix live mocap scale crash on Queue cast",
+    "pushed_on": [],
+    "ahead_master": 0,
+    "ahead_261": 789,
+    "subject_hits": "ancestor",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": true,
+    "rationale": "Branch tip is an old master checkpoint (0 unique commits); identical uncommitted WIP diff as fix-11846-261. Needs a human to pick one of the twins and finish/commit."
+  },
+  {
+    "path": "/c/work/desktop/fix-12085-master",
+    "branch": "fix/DESKTOP-12085-nvenc-failure-reason-tag",
+    "head": "9641e0467a71bc875caa424f89fe4d23bf695fa7",
+    "dirty": 1,
+    "untracked_root_md": [],
+    "last_commit": "9641e0467a71 2026-07-04 mobile: keep the foreground sync quiet when it fails offline",
+    "pushed_on": [],
+    "ahead_master": 0,
+    "ahead_261": 892,
+    "subject_hits": "ancestor",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": true,
+    "rationale": "Branch tip is an old master checkpoint (0 unique commits) plus one uncommitted new file (EncoderFailureReasonClassifier.cs) — NVENC-failure-tagging work never committed, no PR exists."
+  },
+  {
+    "path": "/c/work/desktop/fix-12403",
+    "branch": "fix/DESKTOP-12403-trigger-flake",
+    "head": "f1d2f5f991a7a5eb1e9358b187372a5d2d842ad6",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "f1d2f5f991a7 2026-08-12 model: clock seam for jumpoff and cop trigger caches",
+    "pushed_on": [
+      "my/fix/DESKTOP-12403-trigger-flake"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1745,
+    "subject_hits": "1/1",
+    "prs": [
+      "8006 MERGED"
+    ],
+    "disposition": "remove",
+    "tag": null,
+    "freeze": false,
+    "rationale": "PR #8006 MERGED, content confirmed in if/master, clean tree."
+  },
+  {
+    "path": "/c/work/desktop/fix-12404",
+    "branch": "fix/DESKTOP-12404-localization-culture",
+    "head": "9c0522b95e3f2542964b0e9c04e1350ab58902bc",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "9c0522b95e3f 2026-08-12 present: scope the localization lookup culture",
+    "pushed_on": [
+      "if/mergify/merge-queue/0c43b6bddd"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1745,
+    "subject_hits": "1/1",
+    "prs": [
+      "8005 MERGED"
+    ],
+    "disposition": "remove",
+    "tag": null,
+    "freeze": false,
+    "rationale": "PR #8005 MERGED, content confirmed in if/master, clean tree."
+  },
+  {
+    "path": "/c/work/desktop/fix-12457",
+    "branch": "fix/DESKTOP-12457-handedness-assumed",
+    "head": "0335e887e41972429aa0ddeb993329449a6fc429",
+    "dirty": 1,
+    "untracked_root_md": [],
+    "last_commit": "0335e887e419 2026-08-12 present: flag joint angles measured on an assumed arm",
+    "pushed_on": [
+      "my/fix/DESKTOP-12457-handedness-assumed"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1745,
+    "subject_hits": "1/1",
+    "prs": [
+      "8000 MERGED"
+    ],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": false,
+    "rationale": "PR #8000 already MERGED and content confirmed in if/master; the only dirty file is a regenerated localization translation-memory binary (translations.db) — low-risk, but per policy dirty forces human review rather than an automatic remove."
+  },
+  {
+    "path": "/c/work/desktop/foundation-next",
+    "branch": "DESKTOP-11544-foundation-next",
+    "head": "12392c3722e29713937f290929a7166d4d99fc44",
+    "dirty": 3,
+    "untracked_root_md": [
+      "resume.md",
+      "status.md"
+    ],
+    "last_commit": "12392c3722e2 2026-06-09 test: advance scheduler in amplifier-connected VM test",
+    "pushed_on": [],
+    "ahead_master": 0,
+    "ahead_261": 250,
+    "subject_hits": "ancestor",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": true,
+    "rationale": "Branch tip is an old master checkpoint (0 unique commits, same SHA as mocapzero-ifmaster); untracked resume.md/status.md/data/ look like agent session notes to archive, not code."
+  },
+  {
+    "path": "/c/work/desktop/ifmaster-bench",
+    "branch": "",
+    "head": "a3243a77f967c923c98e3fef69bca8d4db27565f",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "a3243a77f967 2026-06-17 model: make mocap benchmark warmup adaptive to steady state",
+    "pushed_on": [],
+    "ahead_master": 2,
+    "ahead_261": 477,
+    "subject_hits": "1/2",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": true,
+    "rationale": "Detached HEAD, clean; one of two commits exactly matches content already in if/master, the other ('adaptive warmup') has no exact match though a related benchmark-coverage commit exists there — not confirmed full absorption, worth a quick diff check before removing."
+  },
+  {
+    "path": "/c/work/desktop/inplace",
+    "branch": "DESKTOP-12318-inplace-v2",
+    "head": "6c2dcc750d2b8e87a60c2c4542572ae8c2805395",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "6c2dcc750d2b 2026-08-07 test: cover in-place mocap-reprocess refresh end to end",
+    "pushed_on": [],
+    "ahead_master": 20,
+    "ahead_261": 1400,
+    "subject_hits": "20/20",
+    "prs": [],
+    "disposition": "remove",
+    "tag": null,
+    "freeze": false,
+    "rationale": "No PR under this exact branch name, but all 20 unique commit subjects are verbatim present in if/master (likely landed under a renamed/rebased branch) — content fully absorbed, clean tree."
+  },
+  {
+    "path": "/c/work/desktop/measurex-upstream",
+    "branch": "desktop-11523-measurex-upstream",
+    "head": "3cdd3dddc6960f1beaf006f95ee76c42986a0033",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "3cdd3dddc696 2026-06-04 chore(measurex): RE wire-capture corpus + clean-room artifacts [DROP BEFORE UPSTREAM]",
+    "pushed_on": [],
+    "ahead_master": 3,
+    "ahead_261": 127,
+    "subject_hits": "0/3",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": true,
+    "rationale": "3 unpushed, unmerged commits, one explicitly tagged '[DROP BEFORE UPSTREAM]' — RE/clean-room MeasureX work never intended to leave this machine. Do not push or fetch; needs a human disposal decision."
+  },
+  {
+    "path": "/c/work/desktop/mocap2-bp-12194",
+    "branch": "backport/desktop-12194-mobilecam-startup-26.1",
+    "head": "d7aab19fb4708aee350fcd578a6506ebdc31fa34",
+    "dirty": 75,
+    "untracked_root_md": [],
+    "last_commit": "d7aab19fb470 2026-08-04 video: start mobile-camera server from hardware-system init seam",
+    "pushed_on": [],
+    "ahead_master": 286,
+    "ahead_261": 2,
+    "subject_hits": "2/2",
+    "prs": [
+      "7494 MERGED"
+    ],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": false,
+    "rationale": "The named backport (2 commits) is merged (PR #7494). But the worktree carries ~75 files of uncommitted changes including several deleted test files and a deleted tools/BuildCli helper, plus a modified translations.db — looks like a stale/bad rebase, not intentional WIP. Needs inspection before any action."
+  },
+  {
+    "path": "/c/work/desktop/mocap2-cam",
+    "branch": "fix/desktop-12182-camera-buffering-restart",
+    "head": "1fd641d664c993983ef1de2a9c987555ac00809e",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "1fd641d664c9 2026-08-03 model/capture: reset start-scope task on stop buffering so device restarts",
+    "pushed_on": [
+      "my/fix/desktop-12182-camera-buffering-restart"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1258,
+    "subject_hits": "1/1",
+    "prs": [
+      "7444 MERGED"
+    ],
+    "disposition": "remove",
+    "tag": null,
+    "freeze": false,
+    "rationale": "PR #7444 MERGED, content confirmed in if/master, clean tree."
+  },
+  {
+    "path": "/c/work/desktop/mocap2-fix-ballfix",
+    "branch": "fix/ball-desync-rounding-and-smear",
+    "head": "bbb33c790d80bbfb9abb22fb333c97830c644d62",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "bbb33c790d80 2026-07-24 video: show raw ball detection without smoothing or dropout hold",
+    "pushed_on": [],
+    "ahead_master": 210,
+    "ahead_261": 1419,
+    "subject_hits": "1/15",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": true,
+    "rationale": "Clean tree but 210 unique unpushed commits (only 1/15 sampled found in if/master) — a large, unmerged, unpushed body of mocap2 ball-desync work with no PR and no remote copy anywhere."
+  },
+  {
+    "path": "/c/work/desktop/mocap2-fix-ballsync",
+    "branch": "fix/ball-marker-1frame-lag",
+    "head": "410924c1b8342e198128e50778714c7bd1779085",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "410924c1b834 2026-07-24 video: only replace the reprocessed capture type on save",
+    "pushed_on": [],
+    "ahead_master": 208,
+    "ahead_261": 1417,
+    "subject_hits": "1/15",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": true,
+    "rationale": "Same pattern as mocap2-fix-ballfix: clean tree, 208 unpushed unique commits, essentially unmerged (1/15 sampled found upstream), no PR."
+  },
+  {
+    "path": "/c/work/desktop/mocap2-mergewt",
+    "branch": "mocap2-clean-merged",
+    "head": "34bdcb56337e41d7ed9297a9fe2a0e03c11bfe64",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "34bdcb56337e 2026-07-14 localize: translate mocap object-detection strings into all locales",
+    "pushed_on": [],
+    "ahead_master": 190,
+    "ahead_261": 1324,
+    "subject_hits": "1/15",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": true,
+    "rationale": "Clean tree holding 190 unpushed, largely unmerged commits (a consolidated mocap2 integration branch) — no PR, no remote copy. Losing this would lose real work."
+  },
+  {
+    "path": "/c/work/desktop/mocap2-settings",
+    "branch": "feature/desktop-12180-mocap-settings-detection",
+    "head": "656488b9a9212597be24f7412e9da02329f7427e",
+    "dirty": 1,
+    "untracked_root_md": [],
+    "last_commit": "656488b9a921 2026-07-16 present: compact mocap detection/GPU top row",
+    "pushed_on": [],
+    "ahead_master": 192,
+    "ahead_261": 1326,
+    "subject_hits": "0/15",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": true,
+    "rationale": "Dirty tree plus 192 unpushed, unmerged commits and zero PR — an active-looking feature branch (mocap settings detection) that exists only in this worktree."
+  },
+  {
+    "path": "/c/work/desktop/mocap2-zoom",
+    "branch": "",
+    "head": "a9fe07afff263f7e5da6b407a8aeee42d54a67cc",
+    "dirty": 1,
+    "untracked_root_md": [],
+    "last_commit": "a9fe07afff26 2026-08-02 model: compute the framing rect in one shared place",
+    "pushed_on": [],
+    "ahead_master": 1,
+    "ahead_261": 1245,
+    "subject_hits": "1/1",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": false,
+    "rationale": "Detached HEAD; its single unique commit's content is confirmed verbatim in if/master (fully absorbed) — the only blocker is one untracked generated test-data index file. Clear it and this becomes a safe removal."
+  },
+  {
+    "path": "/c/work/desktop/mocapzero-ifmaster",
+    "branch": "",
+    "head": "12392c3722e29713937f290929a7166d4d99fc44",
+    "dirty": 6,
+    "untracked_root_md": [],
+    "last_commit": "12392c3722e2 2026-06-09 test: advance scheduler in amplifier-connected VM test",
+    "pushed_on": [],
+    "ahead_master": 0,
+    "ahead_261": 250,
+    "subject_hits": "ancestor",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": null,
+    "freeze": true,
+    "rationale": "Detached HEAD sitting on the same old master checkpoint as foundation-next (0 unique commits); dirty state is local benchmark-run artifacts (2 modified perf/Benchmarks files + 4 generated .cso shader-cache files) — likely disposable but per policy dirty forces human review."
+  },
+  {
+    "path": "/c/work/desktop/oldbertec-hitting",
+    "branch": "DESKTOP-11483-bb-oldbertec-hitting",
+    "head": "17925080fa5fbea0db0d302a863ef1ec6286ee52",
+    "dirty": 1,
+    "untracked_root_md": [],
+    "last_commit": "17925080fa5f 2026-04-29 present/sensorplate: use 90-degree icon only when step is 90",
+    "pushed_on": [],
+    "ahead_master": 92,
+    "ahead_261": 92,
+    "subject_hits": "0/92 (not exhaustively checked)",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": "",
+    "freeze": true,
+    "rationale": "92-commit multi-station feature, 3.5 months stale, no PR ever opened, dirty beads.db; may be shelved given single-station product direction — needs a human decision."
+  },
+  {
+    "path": "/c/work/desktop/phonecam-bp261",
+    "branch": "r7651b",
+    "head": "66482693a5e9c47053d8ad927ed91354d05f1fdc",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "66482693a5e9 2026-08-10 chore: drop harness example image from the backport",
+    "pushed_on": [
+      "if/pull/7651",
+      "if/pull/7917"
+    ],
+    "ahead_master": 473,
+    "ahead_261": 31,
+    "subject_hits": "31/31",
+    "prs": [
+      "7651 MERGED",
+      "7917 CLOSED (merge-queue check)"
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "All 31 unique commits vs if/stable/26.1 subject-match exactly; PR #7651 merged non-squash. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/phonecam-extract",
+    "branch": "",
+    "head": "43517888c18f8cfe09937a1cd5cbbf46b8d25107",
+    "dirty": 83,
+    "untracked_root_md": [],
+    "last_commit": "43517888c18f 2026-08-10 video/mobilecamera: full-fps capture and clock sync",
+    "pushed_on": [
+      "if/pull/7647",
+      "if/pull/7912"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1655,
+    "subject_hits": "1/1",
+    "prs": [
+      "7647 MERGED",
+      "7912 CLOSED (merge-queue check)"
+    ],
+    "disposition": "human-review",
+    "tag": "",
+    "freeze": true,
+    "rationale": "HEAD is squash-merged into if/master (PR #7647), but worktree carries 83 dirty lines including deletions of ~20 test files and edits across capture/video sources not explained by any commit — needs human triage."
+  },
+  {
+    "path": "/c/work/desktop/quartet",
+    "branch": "quartet-rebase-work",
+    "head": "3954f9ff59e2582edb9404e699f9f88cc4a4884f",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "3954f9ff59e2 2026-08-07 test: restore System.Threading using dropped by rebase conflict resolution",
+    "pushed_on": [],
+    "ahead_master": 9,
+    "ahead_261": 1372,
+    "subject_hits": "8/9 (miss: no-op 'ci: retrigger after github actions incident')",
+    "prs": [],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "8 of 9 unique commits subject-match if/master; the 1 miss is a contentless CI retrigger. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/rawcodecs-gpu",
+    "branch": "video/rawcodecs",
+    "head": "a8b7414f5c9a5f517bf09909406e8f58f060091a",
+    "dirty": 19,
+    "untracked_root_md": [],
+    "last_commit": "a8b7414f5c9a 2026-08-13 test: migrate raw-denoise VM tests to the shared-status contract",
+    "pushed_on": [],
+    "ahead_master": 671,
+    "ahead_261": 2460,
+    "subject_hits": "not checked (671 commits)",
+    "prs": [],
+    "disposition": "adopt",
+    "tag": "rawcodecs-gpu",
+    "freeze": false,
+    "rationale": "671 unique commits of active raw-codec research, commit today, dirty count changed between reads confirming a live session. Adopt, do not freeze."
+  },
+  {
+    "path": "/c/work/desktop/rgfix",
+    "branch": "DESKTOP-review-gate-argv",
+    "head": "452e9680a917bbe0c211be61a53490a5111b7329",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "452e9680a917 2026-08-07 ci: fix review-gate E2BIG and stale-diff-base",
+    "pushed_on": [
+      "if/pull/7780",
+      "if/pull/7835",
+      "if/pull/7836",
+      "if/pull/7837"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1362,
+    "subject_hits": "1/1",
+    "prs": [
+      "7780 MERGED"
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "Single commit merged via PR #7780. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/simhw-ci",
+    "branch": "ci/rig-fork-prs",
+    "head": "e9de5f9ce36266474681c2c7f3ef95930d5e21b5",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "e9de5f9ce362 2026-08-11 ci: run PR rig UI lanes on org-member fork PRs",
+    "pushed_on": [
+      "if/pull/7994",
+      "my/ci/rig-fork-prs",
+      "if/pull/7995"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1718,
+    "subject_hits": "1/1",
+    "prs": [
+      "7994 MERGED"
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "Single commit merged via PR #7994. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/simhw-rebase",
+    "branch": "simhw-fixes",
+    "head": "f6906750e53f2673ab3be4c4eeb3b4a5c392932e",
+    "dirty": 1,
+    "untracked_root_md": [],
+    "last_commit": "f6906750e53f 2026-08-13 ci: pull third-party LFS binaries in the codeanalysis-tests job",
+    "pushed_on": [
+      "my/simhw-control"
+    ],
+    "ahead_master": 434,
+    "ahead_261": 2191,
+    "subject_hits": "not checked (434 commits)",
+    "prs": [
+      "7986 OPEN (DESKTOP-12473, pushed under my/simhw-control)"
+    ],
+    "disposition": "adopt",
+    "tag": "simhw",
+    "freeze": false,
+    "rationale": "Large simulated-hardware feature branch with an open PR (#7986) and a commit today. Active — adopt. NOTE: tag 'simhw' already registered to /c/work/desktop/simhw; adopt under a distinct tag (e.g. simhw-rebase)."
+  },
+  {
+    "path": "/c/work/desktop/wd12298",
+    "branch": "DESKTOP-12298-guardfix",
+    "head": "fa8c3a5caeede8d5688dcc4d3131b6f71d3a5f12",
+    "dirty": 2,
+    "untracked_root_md": [],
+    "last_commit": "fa8c3a5caeed 2026-08-06 test: lock in the removed exit-watchdog wall-clock wait",
+    "pushed_on": [
+      "if/pull/7699",
+      "if/pull/7744",
+      "if/pull/7750",
+      "if/pull/7751"
+    ],
+    "ahead_master": 3,
+    "ahead_261": 1303,
+    "subject_hits": "0/3 (content-verified alternate design, not in if/master)",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": "",
+    "freeze": true,
+    "rationale": "3 unique commits reimplement exit-watchdog cancellation with a different re-armable design than what landed for DESKTOP-12320; no PR. Dirty lines are line-ending-only noise. Needs a human call on the alternate design."
+  },
+  {
+    "path": "/c/work/desktop/wpf-test",
+    "branch": "DESKTOP-12294",
+    "head": "bdcb250f0be045aee6911ef6e1cb9b6e6ac242fe",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "bdcb250f0be0 2026-08-12 perf(vm): cache playback index to avoid per-tick TimeSpan boxing",
+    "pushed_on": [],
+    "ahead_master": 5,
+    "ahead_261": 1762,
+    "subject_hits": "0/5",
+    "prs": [],
+    "disposition": "adopt",
+    "tag": "wpf-fork-nupkg-bump",
+    "freeze": false,
+    "rationale": "Chain of WPF-fork nupkg bumps (if.77->if.80->if.84->if.116) plus a perf fix, unmerged, no PR, committed yesterday; ties to the if.84 dispatcher-crash defect. Active — adopt."
+  },
+  {
+    "path": "/c/work/desktop/wt-10013-calib",
+    "branch": "",
+    "head": "f045c0a1a1bc6bdfc22f8f17cbe48bc1dec3c175",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "f045c0a1a1bc 2026-08-04 video: fix calibration convergence and seed matrix",
+    "pushed_on": [
+      "if/pull/7279",
+      "if/pull/7657",
+      "if/pull/7661",
+      "if/pull/7662"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1289,
+    "subject_hits": "1/1",
+    "prs": [],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "Detached HEAD, 1 unique commit, subject-verified merged into if/master. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/wt-10013-undistort",
+    "branch": "",
+    "head": "78f3b1968e261387d88bc76355f3f049378d7a3b",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "78f3b1968e26 2026-08-06 video: remap legacy lens intrinsics at filter build",
+    "pushed_on": [
+      "if/pull/7278"
+    ],
+    "ahead_master": 6,
+    "ahead_261": 1336,
+    "subject_hits": "6/6",
+    "prs": [],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "Detached HEAD, 6 unique commits, all subject-verified merged into if/master. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/wt-12264",
+    "branch": "fix/DESKTOP-12264-fail-on-testhost-crash",
+    "head": "bad074fe8dcf442eff52726acb531d163ac37404",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "bad074fe8dcf 2026-08-04 build: fail tests on any nonzero testhost exit",
+    "pushed_on": [],
+    "ahead_master": 1,
+    "ahead_261": 1289,
+    "subject_hits": "1/1",
+    "prs": [
+      "7653 MERGED"
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "Single commit merged via PR #7653. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/wt-12276",
+    "branch": "fix/DESKTOP-12276-outlier-thresholds",
+    "head": "7b2a6984a566ef6234f2a52a76b9b36053ff13c3",
+    "dirty": 1,
+    "untracked_root_md": [],
+    "last_commit": "7b2a6984a566 2026-08-03 foundation: state that framing zoom follows the implement's arc",
+    "pushed_on": [
+      "if/pull/7279",
+      "my/pr1-tooling",
+      "if/pull/7555"
+    ],
+    "ahead_master": 0,
+    "ahead_261": 1270,
+    "subject_hits": "merged by ancestry",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": "",
+    "freeze": true,
+    "rationale": "HEAD fully contained in if/master; only outstanding item is an untracked data/12276-findings/ dir of local analysis notes — archive or discard before removal."
+  },
+  {
+    "path": "/c/work/desktop/wt-12298",
+    "branch": "fix/DESKTOP-12298-deterministic-exit-timer",
+    "head": "02dd5baab1bcac0ab4b7f91c3131c3485e064b9b",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "02dd5baab1bc 2026-08-06 test: make ApplicationModel exit-timer test deterministic",
+    "pushed_on": [
+      "if/pull/7685",
+      "if/pull/7729",
+      "if/pull/7730",
+      "if/pull/7733"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1320,
+    "subject_hits": "1/1 (matched in if/master despite originating PR closed)",
+    "prs": [
+      "7685 CLOSED"
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "PR #7685 closed unmerged, but identical commit subject present in if/master under a different SHA. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/wt-12299",
+    "branch": "DESKTOP-12299",
+    "head": "42493265e0ff25f506fecc778fff2b7f936e5219",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "42493265e0ff 2026-08-04 chore: ci checks and developer tooling",
+    "pushed_on": [
+      "if/pull/7279",
+      "my/pr1-tooling",
+      "if/pull/7404"
+    ],
+    "ahead_master": 0,
+    "ahead_261": 1288,
+    "subject_hits": "merged by ancestry",
+    "prs": [],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "HEAD fully contained in if/master. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/wt-12320",
+    "branch": "fix/DESKTOP-12320-exit-watchdog",
+    "head": "719be68544c8f3a07dbede6e73aa46d309186163",
+    "dirty": 1,
+    "untracked_root_md": [],
+    "last_commit": "719be68544c8 2026-08-04 model: cancel exit watchdog on dispose",
+    "pushed_on": [],
+    "ahead_master": 1,
+    "ahead_261": 1289,
+    "subject_hits": "1/1",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": "",
+    "freeze": true,
+    "rationale": "Content merged into if/master under a rebased SHA; worktree has an untracked inspectcode.xml generated report. Low-risk, one look to clear."
+  },
+  {
+    "path": "/c/work/desktop/wt-12351",
+    "branch": "fix/DESKTOP-12351-object-detection-gate",
+    "head": "6745b65f4ea5b60a7e3ae746382069b253773f10",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "6745b65f4ea5 2026-08-06 present: source club/ball gate from open take",
+    "pushed_on": [
+      "if/pull/7715",
+      "my/fix/DESKTOP-12351-object-detection-gate"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1320,
+    "subject_hits": "1/1",
+    "prs": [
+      "7715 MERGED"
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "Single commit merged via PR #7715. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/wt-12469-fp",
+    "branch": "fix/DESKTOP-12469-mjpeg-temporal-decoder-guard",
+    "head": "08cdfeb7791ede4055e54ab514e4bde76d7d2e97",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "08cdfeb7791e 2026-08-13 video/present: fall back to non-temporal path for coded frames",
+    "pushed_on": [
+      "my/fix/DESKTOP-12469-mjpeg-temporal-decoder-guard"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1801,
+    "subject_hits": "0/1 (open PR)",
+    "prs": [
+      "8076 OPEN"
+    ],
+    "disposition": "adopt",
+    "tag": "mjpeg-temporal-decoder-guard",
+    "freeze": false,
+    "rationale": "Open PR #8076, commit today, live work awaiting review. Adopt, do not freeze."
+  },
+  {
+    "path": "/c/work/desktop/wt-61d14-pat",
+    "branch": "DESKTOP-nuget-pat-removal",
+    "head": "66fb3c0e428a78a24406b57dfb6abfcfbc5e6de9",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "66fb3c0e428a 2026-07-05 ci: replace hardcoded NuGet PAT with env auth",
+    "pushed_on": [],
+    "ahead_master": 1,
+    "ahead_261": 893,
+    "subject_hits": "0/1 by subject; content-verified superseded",
+    "prs": [
+      "7306 CLOSED"
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "PR #7306 closed unmerged, but if/master already carries the identical PAT_GITHUB env-var auth pattern (content-verified). Over a month stale, clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/wt-7647-fix",
+    "branch": "r7647c",
+    "head": "978efefcb138c33e95e0487534fa3409ce5f9201",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "978efefcb138 2026-08-08 test: remove stale MigrationStepTo95IsolatedTests duplicate",
+    "pushed_on": [],
+    "ahead_master": 34,
+    "ahead_261": 1407,
+    "subject_hits": "0/34 by subject (squash-merged); content-verified via diff stat vs master's squash commit",
+    "prs": [
+      "7647 MERGED"
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "Pre-squash history of PR #7647 which merged as squash commit 78d15147704e; content-diff confirms near-identical file set. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/wt-7650-portable-paths",
+    "branch": "portable-app-paths-rebase",
+    "head": "5a713e4b0c827e4dc62ea437609ced22e8b2fb09",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "5a713e4b0c82 2026-08-08 test(app-paths): stop the fixture stranding the AppPaths seam; add install-probe regression guard",
+    "pushed_on": [
+      "if/pull/7650",
+      "my/portable-app-paths",
+      "if/pull/7836"
+    ],
+    "ahead_master": 8,
+    "ahead_261": 1445,
+    "subject_hits": "8/8",
+    "prs": [
+      "7650 MERGED"
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": true,
+    "rationale": "All 8 unique commits subject-match if/master; PR #7650 merged. Clean, safe to remove."
+  },
+  {
+    "path": "/c/work/desktop/wt-7653-flake",
+    "branch": "flake-7653-work-v2",
+    "head": "c735315196b3900ff5f09bfdb95a8ee09debdcdc",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "c735315196b3 2026-08-08 test: serialize the culture-mutating localization fixture",
+    "pushed_on": [],
+    "ahead_master": 3,
+    "ahead_261": 1440,
+    "subject_hits": "3/3",
+    "prs": [],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "All 3 unique commits confirmed in if/master by subject; clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-7746b",
+    "branch": "linux-default-phase0-rebase-work",
+    "head": "d51c26f07449c36803acb1c091b278a2a94a5e0f",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "d51c26f07449 2026-08-07 build: let exact --project bypass excludes",
+    "pushed_on": [],
+    "ahead_master": 8,
+    "ahead_261": 1398,
+    "subject_hits": "8/8",
+    "prs": [
+      {
+        "number": 7746,
+        "state": "MERGED"
+      }
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "Same 8 commits as wt-7746c, all merged via PR #7746; clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-7746c",
+    "branch": "attempt3",
+    "head": "dc5239fed4035e1879ea08f594d58ab00ef62241",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "dc5239fed403 2026-08-08 build: let exact --project bypass excludes",
+    "pushed_on": [
+      "if/pull/7746",
+      "my/ci/linux-default-phase0",
+      "if/pull/7844"
+    ],
+    "ahead_master": 8,
+    "ahead_261": 1449,
+    "subject_hits": "8/8",
+    "prs": [
+      {
+        "number": 7746,
+        "state": "MERGED"
+      }
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "All 8 commits merged via PR #7746; clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-buildcli-stale-output",
+    "branch": "buildcli-stale-output",
+    "head": "91b870a94591ddcb6274c8a4913de84faa7d18a6",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "91b870a94591 2026-08-08 ci: retrigger to supersede a stale queued check",
+    "pushed_on": [
+      "if/pull/7572",
+      "my/buildcli-stale-output",
+      "if/pull/7873"
+    ],
+    "ahead_master": 2,
+    "ahead_261": 1500,
+    "subject_hits": "1/2",
+    "prs": [
+      {
+        "number": 7572,
+        "state": "MERGED"
+      }
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "PR #7572 merged; unmatched commit is an empty CI-retrigger. Clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-ci-flakes",
+    "branch": "fix/ci-flake-quartet",
+    "head": "19bc8c5578c5f3ada62b9f8eff2e955c688aa5cb",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "19bc8c5578c5 2026-08-06 model: let the forced-shutdown watchdog survive Dispose",
+    "pushed_on": [],
+    "ahead_master": 7,
+    "ahead_261": 1309,
+    "subject_hits": "7/7",
+    "prs": [
+      {
+        "number": 7696,
+        "state": "MERGED"
+      }
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "PR #7696 merged, all 7 commits confirmed by subject; clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-ci-inspect",
+    "branch": "fix/inspectcode-version-probe",
+    "head": "a2989491a35aae381aaf8308f6bfe6345ab6e01f",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "a2989491a35a 2026-08-05 test: name unrestored LFS take fixtures instead of failing opaquely",
+    "pushed_on": [
+      "my/pr1-tooling",
+      "if/pull/7404",
+      "if/pull/7659"
+    ],
+    "ahead_master": 0,
+    "ahead_261": 1297,
+    "subject_hits": "0/0",
+    "prs": [],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "HEAD is a direct ancestor of if/master; clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-ci-requeue",
+    "branch": "ci/queue-requeue-policy",
+    "head": "2cd4fc41b6c5b9d6c26da1383a8e800c42fb97f7",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "2cd4fc41b6c5 2026-08-06 ci: fix inert trigger and classifier in auto-requeue",
+    "pushed_on": [],
+    "ahead_master": 3,
+    "ahead_261": 1300,
+    "subject_hits": "3/3",
+    "prs": [
+      {
+        "number": 7687,
+        "state": "MERGED"
+      }
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "PR #7687 merged (squash), all 3 commits confirmed by subject; clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-ci-telemetry",
+    "branch": "ci/queue-telemetry",
+    "head": "4b066d97a82ab9a4c48e02c89c3658727099389c",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "4b066d97a82a 2026-08-06 ci: fix PR #7690 review findings part 2 (M3-7 through M3-14)",
+    "pushed_on": [
+      "if/pull/7690",
+      "if/pull/7725",
+      "if/pull/7728"
+    ],
+    "ahead_master": 6,
+    "ahead_261": 1303,
+    "subject_hits": "6/6",
+    "prs": [
+      {
+        "number": 7690,
+        "state": "MERGED"
+      }
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "PR #7690 merged, all 6 commits confirmed by subject; clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-ci-tranche",
+    "branch": "ci/throughput-tranche-b",
+    "head": "fe9b1bea0af3846ee8c8d0efc3d388bffaba7a00",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "fe9b1bea0af3 2026-08-06 ci: drop stale snapshot manifest on the unit rebuild path too",
+    "pushed_on": [
+      "if/pull/7686",
+      "my/ci/throughput-tranche-b"
+    ],
+    "ahead_master": 10,
+    "ahead_261": 1329,
+    "subject_hits": "10/10",
+    "prs": [
+      {
+        "number": 7686,
+        "state": "MERGED"
+      }
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "PR #7686 merged, all 10 commits confirmed by subject; clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-clear-test",
+    "branch": "",
+    "head": "bcf1374781fbf76fa6057d4eaa96e41cc7683a75",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "bcf1374781fb 2026-08-06 test: record the broker CLI handshake wait as accepted determinism debt",
+    "pushed_on": [
+      "my/pr1-tooling",
+      "if/pull/7404",
+      "if/pull/7659"
+    ],
+    "ahead_master": 0,
+    "ahead_261": 1300,
+    "subject_hits": "0/0",
+    "prs": [],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "Detached HEAD; SHA is literally PR #7691's squash-merge commit on master — a snapshot checkout, ancestor of if/master, clean."
+  },
+  {
+    "path": "/c/work/desktop/wt-det-allowlist",
+    "branch": "fix/determinism-broker-handshake-allowlist",
+    "head": "de4eb6d3461b001f71d5add232e488935fc6cfcc",
+    "dirty": 2,
+    "untracked_root_md": [],
+    "last_commit": "de4eb6d3461b 2026-08-06 test: reconcile determinism baseline (broker handshake + stale ObjectDetector)",
+    "pushed_on": [
+      "if/pull/7691",
+      "my/fix/determinism-broker-handshake-allowlist"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1298,
+    "subject_hits": "0/1 (squash)",
+    "prs": [
+      {
+        "number": 7691,
+        "state": "MERGED"
+      }
+    ],
+    "disposition": "human-review",
+    "tag": "det-allowlist",
+    "freeze": false,
+    "rationale": "Content merged via PR #7691 (squash, verified via gh mergeCommit/headRefOid), but 2 dirty allowlist-baseline files block auto-removal."
+  },
+  {
+    "path": "/c/work/desktop/wt-dlm-rebase",
+    "branch": "DESKTOP-9947-dlmodels-r2",
+    "head": "a1fcfb5eb404743beb5b92dc1ace45ffb1301811",
+    "dirty": 3,
+    "untracked_root_md": [],
+    "last_commit": "a1fcfb5eb404 2026-07-07 test: fix architecture guard failures after rebase onto master",
+    "pushed_on": [
+      "if/pull/7349",
+      "my/DESKTOP-9947-dlmodels-r2"
+    ],
+    "ahead_master": 93,
+    "ahead_261": 1096,
+    "subject_hits": "n/a (PR open)",
+    "prs": [
+      {
+        "number": 7349,
+        "state": "OPEN"
+      }
+    ],
+    "disposition": "human-review",
+    "tag": "dlmodels",
+    "freeze": true,
+    "rationale": "PR #7349 still OPEN, 93 unmerged commits, 3 dirty files incl. untracked large fixture, 37 days stale — human decision to revive or abandon."
+  },
+  {
+    "path": "/c/work/desktop/wt-flakes",
+    "branch": "fix/DESKTOP-12263-12226-flaky-tests",
+    "head": "63eecb3d19894ff36e03561e6d4cbe25c4403f0c",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "63eecb3d1989 2026-07-31 gh-pr-images: point WORKER_URL at the deployed initialforce.com domain",
+    "pushed_on": [
+      "if/pull/7279",
+      "if/pull/7444",
+      "my/fix/desktop-12182-camera-buffering-restart"
+    ],
+    "ahead_master": 0,
+    "ahead_261": 1244,
+    "subject_hits": "0/0",
+    "prs": [],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "HEAD is a direct ancestor of if/master; clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-flakes-261",
+    "branch": "fix/DESKTOP-12263-databox-scheduler-seam-26.1",
+    "head": "051cc9c54d32cbdd99dab14926a1025047d1e6a0",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "051cc9c54d32 2026-08-02 vm/: route databox OAPHs through ISchedulers seam",
+    "pushed_on": [
+      "if/pull/7565",
+      "my/fix/DESKTOP-12263-databox-scheduler-seam-26.1",
+      "if/pull/7567"
+    ],
+    "ahead_master": 273,
+    "ahead_261": 1,
+    "subject_hits": "1/1",
+    "prs": [
+      {
+        "number": 7565,
+        "state": "MERGED",
+        "base": "stable/26.1"
+      }
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "PR #7565 merged into stable/26.1; the 1 unique commit confirmed by subject; clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-nunit-bump",
+    "branch": "chore/nunit-4.6.1-bump",
+    "head": "f48f9b5afde68e9594ec30fb1e7c60d79a13059e",
+    "dirty": 732,
+    "untracked_root_md": [],
+    "last_commit": "f48f9b5afde6 2026-08-04 chore(deps): update dependency nunit to 4.6.1",
+    "pushed_on": [
+      "if/pull/7641",
+      "if/pull/7644",
+      "if/pull/7648"
+    ],
+    "ahead_master": 1,
+    "ahead_261": 1289,
+    "subject_hits": "1/1",
+    "prs": [
+      {
+        "number": 7618,
+        "state": "MERGED"
+      }
+    ],
+    "disposition": "human-review",
+    "tag": "nunit-bump",
+    "freeze": false,
+    "rationale": "Content merged via PR #7618, but 732-line dirty set (280 deletions + 452 modifications across localized docs/workflows) looks like a stale/interrupted operation — needs eyes."
+  },
+  {
+    "path": "/c/work/desktop/wt-pcfps",
+    "branch": "phonecam-fps-rebase-work",
+    "head": "fc74701e1b97cc5fdfd8100d9d735346a922e403",
+    "dirty": 1,
+    "untracked_root_md": [],
+    "last_commit": "fc74701e1b97 2026-08-07 model: renumber VideoClip timing migration to step 96",
+    "pushed_on": [
+      "my/phonecam-sync-fps-pin (stale; branch gone from fork)"
+    ],
+    "ahead_master": 29,
+    "ahead_261": 1402,
+    "subject_hits": "0/3 spot-checked beyond merged PR base",
+    "prs": [
+      {
+        "number": 7647,
+        "state": "MERGED",
+        "note": "base only; 29 follow-up commits NOT in if/master"
+      }
+    ],
+    "disposition": "human-review",
+    "tag": "phonecam-fps",
+    "freeze": false,
+    "rationale": "29 commits of real mobilecamera capture/sync follow-up beyond merged PR #7647, absent from if/master, no live fork branch — orphaned unmerged work worth recovering. 1 dirty file (deleted test)."
+  },
+  {
+    "path": "/c/work/desktop/wt-pcfps261",
+    "branch": "phonecam-fps-261-rebase-work",
+    "head": "688bfe133d0b7a658d6bf893a021fb277abfbd7e",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "688bfe133d0b 2026-08-07 model/video: drop dead TryRemove calls, fix stale comment",
+    "pushed_on": [],
+    "ahead_master": 468,
+    "ahead_261": 29,
+    "subject_hits": "2/3 spot-checked beyond merged PR base",
+    "prs": [
+      {
+        "number": 7651,
+        "state": "MERGED",
+        "note": "base only; ~29 follow-up commits beyond PR #7651"
+      }
+    ],
+    "disposition": "human-review",
+    "tag": "phonecam-fps-261",
+    "freeze": false,
+    "rationale": "Same orphaned follow-up work as wt-pcfps rebased onto stable/26.1; not pushed anywhere. Resolve both together."
+  },
+  {
+    "path": "/c/work/desktop/wt-pool-runners",
+    "branch": "",
+    "head": "4f74c59ccfa3d4878bc137916c830a990056db96",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "4f74c59ccfa3 2026-08-07 ci: correct dockerfile lane claim and readme wording",
+    "pushed_on": [
+      "if/pull/7659",
+      "if/pull/7737",
+      "my/pr2.2-perfharness"
+    ],
+    "ahead_master": 0,
+    "ahead_261": 1355,
+    "subject_hits": "0/0",
+    "prs": [],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "Detached HEAD, ancestor of if/master, clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-release-261",
+    "branch": "",
+    "head": "a581536a489dc4936e0da5056f1171cae4d39eb7",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "a581536a489d 2026-08-10 chore: bump version to 26.1.4",
+    "pushed_on": [
+      "if/pull/7946",
+      "my/backport/26.1-ml-cpu-tolerance",
+      "if/pull/7944"
+    ],
+    "ahead_master": 474,
+    "ahead_261": 0,
+    "subject_hits": "0/0",
+    "prs": [],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "Detached HEAD, ancestor of if/stable/26.1, clean tree."
+  },
+  {
+    "path": "/c/work/desktop/wt-xplat-retarget",
+    "branch": "ci/xplat-retarget",
+    "head": "c9ed2e2b28ecba757b54b0340cebcd39ce1ebcdb",
+    "dirty": 0,
+    "untracked_root_md": [],
+    "last_commit": "c9ed2e2b28ec 2026-08-06 ci: writable DOTNET_INSTALL_DIR for the self-hosted xplat lane",
+    "pushed_on": [],
+    "ahead_master": 2,
+    "ahead_261": 1302,
+    "subject_hits": "2/2",
+    "prs": [
+      {
+        "number": 7698,
+        "state": "MERGED"
+      }
+    ],
+    "disposition": "remove",
+    "tag": "",
+    "freeze": false,
+    "rationale": "PR #7698 merged, both commits confirmed by subject; clean tree."
+  },
+  {
+    "path": "/c/work/r3-consolidate",
+    "branch": "r3/consolidated",
+    "head": "6fe770109b66a1590b72e26d69a6b47e8790d02b",
+    "dirty": 83,
+    "untracked_root_md": [],
+    "last_commit": "6fe770109b66 2026-08-13 wip: consolidation checkpoint before redoing the merge three-way",
+    "pushed_on": [],
+    "ahead_master": 1,
+    "ahead_261": 1787,
+    "subject_hits": "n/a",
+    "prs": [],
+    "disposition": "human-review",
+    "tag": "r3-consolidate",
+    "freeze": false,
+    "rationale": "OUTSIDE /c/work/desktop but a legitimate linked worktree of this repo. 83 dirty files, commit TODAY, mid-merge message, never pushed. Active live work — do not touch."
+  }
+]
