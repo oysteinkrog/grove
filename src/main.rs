@@ -230,6 +230,11 @@ fn dispatch(cli: Cli, config_dir: &std::path::Path) -> anyhow::Result<()> {
             grove::cli::done::run(&args, &cx).map_err(Into::into)
         }
 
+        Command::Gc { dry_run, yes } => {
+            let args = grove::cli::gc::GcArgs { dry_run, yes };
+            grove::cli::gc::run(&args, &cx)
+        }
+
         Command::Repo { cmd } => run_repo(&cx, cmd, config_dir),
     }
 }

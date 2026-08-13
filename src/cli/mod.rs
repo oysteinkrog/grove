@@ -4,6 +4,7 @@ pub mod completions;
 pub mod done;
 pub mod fork;
 pub mod freeze;
+pub mod gc;
 pub mod launch;
 pub mod list;
 pub mod new;
@@ -150,6 +151,15 @@ pub enum Command {
         keep_local: bool,
         #[arg(long)]
         keep_remote: bool,
+    },
+    /// Audit the work_dir and clean up what is safe to remove
+    Gc {
+        /// Report what would change and stop.
+        #[arg(long)]
+        dry_run: bool,
+        /// Apply the bookkeeping categories (1, 4, 5, 6) without asking.
+        #[arg(long)]
+        yes: bool,
     },
     /// Generate shell completion scripts
     #[command(hide = true, name = "__completions")]
