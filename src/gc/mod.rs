@@ -229,9 +229,11 @@ pub struct GcOptions {
     pub harness_stale_after: Duration,
     /// Ask `gh` for PR state while classifying merged projects.
     pub query_pr_state: bool,
-    /// Give up on patch-id comparison past this many unique commits; the answer
-    /// stops being cheap and a wrong "merged" verdict is worse than no verdict.
-    pub max_patch_id_commits: usize,
+    /// Cap on the commit-subject fallback. `git cherry` itself is cheap even
+    /// over thousands of commits, but the fallback costs two git calls per
+    /// unmatched commit — and a branch with hundreds of unmatched commits is
+    /// plainly not merged, so there is nothing to learn by grepping for them.
+    pub max_subject_probe_commits: usize,
     /// Emit per-item progress to stderr.
     pub progress: bool,
 }
@@ -244,7 +246,7 @@ impl Default for GcOptions {
             scratch_ttl: crate::ttl::default_ttl(),
             harness_stale_after: Duration::hours(48),
             query_pr_state: true,
-            max_patch_id_commits: 200,
+            max_subject_probe_commits: 40,
             progress: true,
         }
     }

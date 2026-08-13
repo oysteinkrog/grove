@@ -703,6 +703,46 @@ fn merged_work_that_landed_under_a_new_sha_is_still_recognised() {
 }
 
 #[test]
+fn a_long_rebased_branch_is_still_recognised_as_merged() {
+    // The shape that made the audit necessary: a branch whose commits all
+    // landed upstream under new SHAs, so `rev-list --count base..HEAD` reads
+    // high while every patch-id is in fact already in the base. Gating the
+    // patch-id comparison on that count would refuse to answer here, which is
+    // exactly the case worth answering.
+    let fx = Fixture::new();
+    let wt = fx.worktree("wt-long", "feature/long");
+    for n in 1..=5 {
+        commit(&wt, &format!("change-{n}.rs"), &format!("change {n}"));
+    }
+
+    // Diverge main first so the replayed commits cannot reuse their SHAs.
+    commit(&fx.main_repo, "unrelated.rs", "an unrelated upstream change");
+    git(
+        &fx.main_repo,
+        &["cherry-pick", "feature/long~5..feature/long"],
+    );
+    git(&fx.main_repo, &["push", "origin", "main"]);
+    git(&fx.main_repo, &["fetch", "origin"]);
+
+    let mut projects = BTreeMap::new();
+    projects.insert("wt-long".to_string(), project(&wt, "feature/long", None));
+    fx.save_registry(projects);
+
+    let opts = GcOptions {
+        // Nothing may fall back to subject matching: patch-id has to carry it.
+        max_subject_probe_commits: 0,
+        ..GcOptions::for_tests()
+    };
+    let plan = fx.plan(&opts);
+    let finding = find(&plan, Category::MergedProject, "wt-long");
+    assert!(
+        finding.details.iter().any(|d| d.contains("patch-id")),
+        "{:?}",
+        finding.details
+    );
+}
+
+#[test]
 fn dirty_project_is_not_a_done_candidate_however_merged() {
     let fx = Fixture::new();
     let wt = fx.worktree("wt-busy", "feature/busy");

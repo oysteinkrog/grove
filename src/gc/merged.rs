@@ -200,25 +200,12 @@ fn merge_state(
         };
     }
 
-    let ahead = exec::git(
-        path,
-        &["rev-list", "--count", &format!("{base}..HEAD")],
-        QUICK_GIT_TIMEOUT,
-    )
-    .ok()
-    .and_then(|s| s.trim().parse::<usize>().ok());
-
-    if let Some(ahead) = ahead
-        && ahead > scanner.opts.max_patch_id_commits
-    {
-        return MergeState::Unknown {
-            reason: format!(
-                "{ahead} commits ahead of {base}, past the {} commit patch-id budget",
-                scanner.opts.max_patch_id_commits
-            ),
-        };
-    }
-
+    // No commit-count precheck before `git cherry`. A rebase-merged branch is
+    // exactly the case where `rev-list --count base..HEAD` reads in the
+    // hundreds while every patch-id is in fact already in the base, so gating
+    // on that count would refuse to answer precisely when the answer matters.
+    // `git cherry` is cheap regardless (~3s over 4260 commits on this repo);
+    // CHERRY_TIMEOUT is the real bound.
     let cherry = match exec::git(path, &["cherry", base, "HEAD"], CHERRY_TIMEOUT) {
         Ok(text) => parse_cherry(&text),
         Err(e) => {
@@ -232,6 +219,15 @@ fn merge_state(
     if cherry.fully_absorbed() {
         return MergeState::AbsorbedByPatchId {
             commits: cherry.total,
+        };
+    }
+
+    // The subject fallback costs two git calls per unmatched commit. Past the
+    // budget the verdict is not in doubt anyway: a branch with that many
+    // commits the base has never seen is not merged.
+    if cherry.unmerged.len() > scanner.opts.max_subject_probe_commits {
+        return MergeState::NotMerged {
+            remaining: cherry.unmerged.len(),
         };
     }
 
