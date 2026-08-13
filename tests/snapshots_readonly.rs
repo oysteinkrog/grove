@@ -34,6 +34,7 @@ fn make_project(path: &str, branch: &str, base: &str, issue: Option<u32>, frozen
         created: fixed_ts(),
         issue,
         frozen,
+        expires_at: None,
     }
 }
 
@@ -200,6 +201,7 @@ fn snapshot_list_json() {
             issue: r.project.issue,
             frozen: r.project.frozen,
             created: r.project.created,
+            expires_at: r.project.expires_at,
             status: r.status.as_ref().map(JsonStatus::from),
         })
         .collect();

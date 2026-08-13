@@ -1,6 +1,6 @@
 use time::OffsetDateTime;
 
-use crate::cli::new::{compute_branch_name, validate_tag};
+use crate::cli::new::{compute_branch_name, compute_target_path, resolve_expiry, validate_tag};
 use crate::error::{GroveError, Result};
 use crate::git::WorktreeMutator;
 use crate::git::shell_backend::ShellBackend;
@@ -13,6 +13,8 @@ pub struct ForkArgs {
     pub issue: Option<u32>,
     pub branch: Option<String>,
     pub no_fetch: bool,
+    pub ephemeral: bool,
+    pub ttl: Option<String>,
 }
 
 pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
@@ -46,7 +48,12 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
         cx.resolved.issue_prefix.as_deref(),
     );
 
-    let target = cx.resolved.work_dir.join(&new_tag);
+    let target = compute_target_path(&cx.resolved.work_dir, &new_tag, args.ephemeral);
+    let expires_at = resolve_expiry(
+        args.ephemeral,
+        args.ttl.as_deref(),
+        OffsetDateTime::now_utc(),
+    )?;
 
     let backend = ShellBackend::new();
 
@@ -68,6 +75,7 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
         created: OffsetDateTime::now_utc(),
         issue: args.issue,
         frozen: false,
+        expires_at,
     };
 
     let mut registry = cx.registry.clone();
@@ -88,6 +96,14 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
     }
     println!("  Branch:        {new_branch}");
     println!("  Path:          {}", target.display());
+    if let Some(expires_at) = expires_at {
+        println!(
+            "  Expires:       {} (ephemeral)",
+            expires_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_else(|_| expires_at.to_string())
+        );
+    }
 
     Ok(())
 }

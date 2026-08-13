@@ -124,6 +124,7 @@ mod tests {
             created: OffsetDateTime::now_utc(),
             issue: None,
             frozen: false,
+            expires_at: None,
         }
     }
 
@@ -150,6 +151,7 @@ mod tests {
             created,
             issue: Some(123),
             frozen: true,
+            expires_at: None,
         };
 
         let mut registry = Registry::default();

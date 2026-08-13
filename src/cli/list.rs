@@ -57,6 +57,12 @@ pub struct JsonProject {
     pub frozen: bool,
     #[serde(with = "time::serde::rfc3339")]
     pub created: OffsetDateTime,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "time::serde::rfc3339::option"
+    )]
+    pub expires_at: Option<OffsetDateTime>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<JsonStatus>,
 }
@@ -147,14 +153,37 @@ pub fn render_repo_section_with_marker(repo_id: &str, rows: &[ProjectRow], is_cw
 
 fn tag_cell(row: &ProjectRow) -> Cell {
     let tag = &row.tag;
+    let marker = ephemeral_marker(&row.project);
     if row.project.frozen {
-        let text = format!("❄ {tag}");
+        let text = format!("❄ {marker}{tag}");
         Cell::new(display::dim(&text))
+    } else if !marker.is_empty() {
+        let text = format!("{marker}{tag}");
+        if display::use_color() {
+            use owo_colors::OwoColorize;
+            Cell::new(text.bold().to_string())
+        } else {
+            Cell::new(text)
+        }
     } else if display::use_color() {
         use owo_colors::OwoColorize;
         Cell::new(tag.bold().to_string())
     } else {
         Cell::new(tag)
+    }
+}
+
+/// Ephemeral marker for the tag cell: `⏳ ` while the TTL hasn't elapsed yet,
+/// `⌛ ` once it has (a `grove gc` candidate — see `bd-grove-lifecycle-p0ur.10`).
+/// Durable (non-ephemeral) projects get no marker at all.
+fn ephemeral_marker(project: &Project) -> &'static str {
+    if !project.is_ephemeral() {
+        return "";
+    }
+    if project.is_expired(OffsetDateTime::now_utc()) {
+        "⌛ "
+    } else {
+        "⏳ "
     }
 }
 
@@ -250,9 +279,18 @@ fn build_summary(rows: &[ProjectRow]) -> String {
     let mut frozen = 0usize;
     let mut missing = 0usize;
     let mut scanned = 0usize;
+    let mut ephemeral = 0usize;
+    let mut expired = 0usize;
+    let now = OffsetDateTime::now_utc();
     for r in rows {
         if r.project.frozen {
             frozen += 1;
+        }
+        if r.project.is_ephemeral() {
+            ephemeral += 1;
+            if r.project.is_expired(now) {
+                expired += 1;
+            }
         }
         if r.missing {
             missing += 1;
@@ -287,6 +325,12 @@ fn build_summary(rows: &[ProjectRow]) -> String {
     }
     if frozen > 0 {
         parts.push(format!("{frozen} frozen"));
+    }
+    if ephemeral > 0 {
+        parts.push(format!("{ephemeral} ephemeral"));
+    }
+    if expired > 0 {
+        parts.push(format!("{expired} expired"));
     }
     if missing > 0 {
         parts.push(format!("{missing} missing"));
@@ -471,6 +515,7 @@ pub fn run(args: &ListArgs, cx: &RepoContext) -> anyhow::Result<()> {
                         issue: r.project.issue,
                         frozen: r.project.frozen,
                         created: r.project.created,
+                        expires_at: r.project.expires_at,
                         status: if args.no_status {
                             None
                         } else {
@@ -550,6 +595,7 @@ mod tests {
             created: OffsetDateTime::from_unix_timestamp(0).unwrap(),
             issue,
             frozen,
+            expires_at: None,
         }
     }
 
@@ -659,6 +705,90 @@ mod tests {
         );
     }
 
+    // ── bd-grove-lifecycle-p0ur.6: ephemeral marking in `grove list` ────────
+
+    fn make_ephemeral_project(expires_at: OffsetDateTime) -> Project {
+        Project {
+            path: PathBuf::from("/c/work/test/.scratch/probe"),
+            branch: "probe".to_string(),
+            base: "origin/main".to_string(),
+            created: OffsetDateTime::from_unix_timestamp(0).unwrap(),
+            issue: None,
+            frozen: false,
+            expires_at: Some(expires_at),
+        }
+    }
+
+    #[test]
+    fn durable_project_gets_no_ephemeral_marker() {
+        let project = make_project("main", "origin/main", None, false);
+        assert_eq!(ephemeral_marker(&project), "");
+    }
+
+    #[test]
+    fn unexpired_ephemeral_project_gets_hourglass_marker() {
+        let project = make_ephemeral_project(OffsetDateTime::now_utc() + time::Duration::days(1));
+        assert_eq!(ephemeral_marker(&project), "⏳ ");
+    }
+
+    #[test]
+    fn expired_ephemeral_project_gets_expired_marker() {
+        let project = make_ephemeral_project(OffsetDateTime::now_utc() - time::Duration::days(1));
+        assert_eq!(ephemeral_marker(&project), "⌛ ");
+    }
+
+    #[test]
+    fn ephemeral_project_tag_cell_is_marked_in_table_output() {
+        unsafe { std::env::set_var("NO_COLOR", "1") };
+
+        let rows = vec![ProjectRow {
+            tag: "probe".to_string(),
+            project: make_ephemeral_project(OffsetDateTime::now_utc() + time::Duration::days(1)),
+            status: Some(clean_status()),
+            missing: false,
+        }];
+
+        let output = render_repo_section("myrepo", &rows);
+        unsafe { std::env::remove_var("NO_COLOR") };
+
+        assert!(
+            output.contains("⏳"),
+            "ephemeral project should show hourglass glyph: {output}"
+        );
+    }
+
+    #[test]
+    fn summary_counts_ephemeral_and_expired() {
+        let rows = vec![
+            ProjectRow {
+                tag: "a".to_string(),
+                project: make_ephemeral_project(
+                    OffsetDateTime::now_utc() + time::Duration::days(1),
+                ),
+                status: Some(clean_status()),
+                missing: false,
+            },
+            ProjectRow {
+                tag: "b".to_string(),
+                project: make_ephemeral_project(
+                    OffsetDateTime::now_utc() - time::Duration::days(1),
+                ),
+                status: Some(clean_status()),
+                missing: false,
+            },
+        ];
+
+        let summary = build_summary(&rows);
+        assert!(
+            summary.contains("2 ephemeral"),
+            "summary should count both ephemeral projects: {summary}"
+        );
+        assert!(
+            summary.contains("1 expired"),
+            "summary should count only the expired one: {summary}"
+        );
+    }
+
     #[test]
     fn format_status_variants() {
         assert_eq!(format_status(None), "unknown");
@@ -708,6 +838,7 @@ mod tests {
                 issue: r.project.issue,
                 frozen: r.project.frozen,
                 created: r.project.created,
+                expires_at: r.project.expires_at,
                 status: r.status.as_ref().map(JsonStatus::from),
             })
             .collect();
@@ -752,6 +883,7 @@ mod tests {
                 issue: r.project.issue,
                 frozen: r.project.frozen,
                 created: r.project.created,
+                expires_at: r.project.expires_at,
                 status: None,
             })
             .collect();
@@ -796,6 +928,7 @@ mod tests {
             created: OffsetDateTime::from_unix_timestamp(0).unwrap(),
             issue: None,
             frozen: false,
+            expires_at: None,
         }
     }
 

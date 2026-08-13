@@ -161,6 +161,7 @@ fn make_context_with_project(
                 created: OffsetDateTime::now_utc(),
                 issue: None,
                 frozen: false,
+                expires_at: None,
             },
         )
         .unwrap();
@@ -211,6 +212,8 @@ fn fork_two_positionals_explicit_source() {
         issue: None,
         branch: None,
         no_fetch: true,
+        ephemeral: false,
+        ttl: None,
     };
 
     run(&args, &cx).expect("fork should succeed with 2 positionals");
@@ -274,6 +277,8 @@ fn fork_one_positional_infers_source_from_cwd() {
         issue: None,
         branch: None,
         no_fetch: true,
+        ephemeral: false,
+        ttl: None,
     };
 
     let result = run(&args, &cx);
@@ -319,6 +324,8 @@ fn fork_one_positional_cwd_outside_project_errors() {
         issue: None,
         branch: None,
         no_fetch: true,
+        ephemeral: false,
+        ttl: None,
     };
 
     let result = run(&args, &cx);
@@ -357,6 +364,8 @@ fn fork_three_positionals_returns_error() {
         issue: None,
         branch: None,
         no_fetch: true,
+        ephemeral: false,
+        ttl: None,
     };
 
     let err = run(&args, &cx).unwrap_err();
@@ -364,5 +373,72 @@ fn fork_three_positionals_returns_error() {
     assert!(
         msg.contains("fork takes 1 or 2 arguments") || msg.contains("3"),
         "error should mention argument count, got: {msg}"
+    );
+}
+
+/// bd-grove-lifecycle-p0ur.6 AC: `grove fork --ephemeral` places the new
+/// worktree under `.scratch/` and registers an expiry, same as `grove new`.
+#[test]
+fn fork_ephemeral_lands_under_scratch_with_expiry() {
+    let (_bare, clone) = make_bare_and_clone("if");
+    let work_dir = TempDir::new().unwrap();
+    let grove_dir = work_dir.path().join(".grove");
+
+    Command::new("git")
+        .args([
+            "-C",
+            clone.path().to_str().unwrap(),
+            "checkout",
+            "-b",
+            "source-branch",
+        ])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["-C", clone.path().to_str().unwrap(), "checkout", "master"])
+        .status()
+        .unwrap();
+
+    let cx = make_context_with_project(
+        clone.path(),
+        work_dir.path(),
+        &grove_dir,
+        "if",
+        "src",
+        "source-branch",
+    );
+
+    let before = time::OffsetDateTime::now_utc();
+    let args = ForkArgs {
+        positionals: vec!["src".to_string(), "scratch-wt".to_string()],
+        issue: None,
+        branch: None,
+        no_fetch: true,
+        ephemeral: true,
+        ttl: Some("2w".to_string()),
+    };
+
+    run(&args, &cx).expect("fork --ephemeral should succeed");
+
+    let expected_wt = work_dir.path().join(".scratch").join("scratch-wt");
+    assert!(
+        worktree_exists(clone.path(), &expected_wt),
+        "worktree should exist under .scratch at {}",
+        expected_wt.display()
+    );
+
+    let reg = Registry::load(&grove_dir).unwrap();
+    let proj = reg
+        .projects
+        .get("scratch-wt")
+        .expect("new project in registry");
+    assert_eq!(proj.path, expected_wt);
+    let expires_at = proj
+        .expires_at
+        .expect("ephemeral fork should have expires_at");
+    assert!(
+        (expires_at - before).whole_days() >= 13 && (expires_at - before).whole_days() <= 14,
+        "expires_at should be ~2w from creation, got {} days",
+        (expires_at - before).whole_days()
     );
 }

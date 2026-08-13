@@ -121,3 +121,65 @@ fn registry_end_to_end_round_trip() {
     // RFC3339 timestamp field must be a string.
     assert!(v["projects"]["alpha"]["created"].is_string());
 }
+
+/// bd-grove-lifecycle-p0ur.6 AC: a registry.json written by the pre-ephemeral
+/// schema (no `expires_at` field at all) must load unchanged under the real
+/// `grove::registry::Registry` — this is the schema decision the bead calls
+/// for: `expires_at` stays an optional field under `schema_version` 1 rather
+/// than bumping to 2, so old data keeps loading. The trade-off (an *older*
+/// binary re-saving a registry silently drops `expires_at` on any entry it
+/// touches, since `Project` has no `deny_unknown_fields`) is accepted for
+/// this single-install machine and is documented on the bead itself.
+#[test]
+fn pre_ephemeral_schema_registry_loads_unchanged() {
+    let dir = TempDir::new().unwrap();
+    let grove_dir = dir.path().join(".grove");
+
+    let now = time::OffsetDateTime::now_utc();
+
+    // Write a registry.json using the OLD mirror schema — no `expires_at` key
+    // present at all, exactly what a pre-feature grove binary would have
+    // written to disk.
+    let mut old_registry = Registry {
+        schema_version: 1,
+        projects: BTreeMap::new(),
+    };
+    old_registry.projects.insert(
+        "legacy".to_string(),
+        Project {
+            path: PathBuf::from("/c/work/repo/legacy"),
+            branch: "PROJ-9-legacy".to_string(),
+            base: "origin/main".to_string(),
+            created: now,
+            issue: Some(9),
+            frozen: true,
+        },
+    );
+    save(&old_registry, &grove_dir);
+
+    // Sanity check: the file on disk really has no `expires_at` key.
+    let raw = std::fs::read_to_string(grove_dir.join("registry.json")).unwrap();
+    assert!(
+        !raw.contains("expires_at"),
+        "fixture must mirror a pre-feature registry.json with no expires_at key"
+    );
+
+    // Load it with the *real* grove registry loader.
+    let loaded =
+        grove::registry::Registry::load(&grove_dir).expect("old-schema registry should load");
+    assert_eq!(loaded.schema_version, 1);
+    let legacy = loaded
+        .projects
+        .get("legacy")
+        .expect("legacy project should load");
+    assert_eq!(legacy.branch, "PROJ-9-legacy");
+    assert_eq!(legacy.base, "origin/main");
+    assert_eq!(legacy.issue, Some(9));
+    assert!(legacy.frozen);
+    assert_eq!(legacy.created.unix_timestamp(), now.unix_timestamp());
+
+    // The missing field defaults to `None` — a project loaded from an old
+    // registry is durable (non-ephemeral) by construction.
+    assert!(legacy.expires_at.is_none());
+    assert!(!legacy.is_ephemeral());
+}

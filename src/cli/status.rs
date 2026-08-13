@@ -205,6 +205,7 @@ mod tests {
                 created: OffsetDateTime::from_unix_timestamp(0).unwrap(),
                 issue: None,
                 frozen: false,
+                expires_at: None,
             },
         );
         let mut repos = BTreeMap::new();
@@ -294,6 +295,7 @@ mod tests {
             created: OffsetDateTime::from_unix_timestamp(0).unwrap(),
             issue: None,
             frozen: false,
+            expires_at: None,
         };
 
         // We render to stdout; capture by redirecting through a buffer isn't trivial,

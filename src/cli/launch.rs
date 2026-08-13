@@ -185,6 +185,7 @@ mod tests {
             created: OffsetDateTime::from_unix_timestamp(0).unwrap(),
             issue: None,
             frozen,
+            expires_at: None,
         }
     }
 

@@ -27,6 +27,8 @@ fn phase3_full_lifecycle() {
             branch: None,
             base: None,
             no_fetch: true,
+            ephemeral: false,
+            ttl: None,
         };
         new_project(&args, &cx).expect("grove new alpha should succeed");
 

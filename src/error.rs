@@ -22,6 +22,9 @@ pub enum GroveError {
     #[error("invalid tag '{tag}': {reason}")]
     InvalidTag { tag: String, reason: String },
 
+    #[error("invalid --ttl value '{value}': {reason}")]
+    InvalidTtl { value: String, reason: String },
+
     #[error("registry error: {msg}")]
     Registry { msg: String },
 

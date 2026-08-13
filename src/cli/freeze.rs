@@ -97,6 +97,7 @@ mod tests {
             created: OffsetDateTime::from_unix_timestamp(0).unwrap(),
             issue: None,
             frozen: false,
+            expires_at: None,
         }
     }
 
@@ -217,6 +218,7 @@ mod tests {
             created: OffsetDateTime::from_unix_timestamp(0).unwrap(),
             issue: None,
             frozen: false,
+            expires_at: None,
         };
         projects.insert("myfeature".to_string(), p);
 

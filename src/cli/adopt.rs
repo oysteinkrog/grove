@@ -57,6 +57,7 @@ pub fn run(args: &AdoptArgs, cx: &RepoContext) -> Result<()> {
         created: OffsetDateTime::now_utc(),
         issue: args.issue,
         frozen: false,
+        expires_at: None,
     };
 
     let mut registry = cx.registry.clone();

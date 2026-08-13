@@ -168,6 +168,7 @@ fn make_context_with_project(
                 created: OffsetDateTime::now_utc(),
                 issue: None,
                 frozen: false,
+                expires_at: None,
             },
         )
         .unwrap();
@@ -327,6 +328,7 @@ fn rename_duplicate_tag_returns_error() {
                 created: OffsetDateTime::now_utc(),
                 issue: None,
                 frozen: false,
+                expires_at: None,
             },
         )
         .unwrap();
@@ -340,6 +342,7 @@ fn rename_duplicate_tag_returns_error() {
                 created: OffsetDateTime::now_utc(),
                 issue: None,
                 frozen: false,
+                expires_at: None,
             },
         )
         .unwrap();

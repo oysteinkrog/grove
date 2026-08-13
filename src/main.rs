@@ -104,6 +104,8 @@ fn dispatch(cli: Cli, config_dir: &std::path::Path) -> anyhow::Result<()> {
             branch,
             base,
             no_fetch,
+            ephemeral,
+            ttl,
         } => {
             let args = grove::cli::new::NewArgs {
                 tag,
@@ -111,6 +113,8 @@ fn dispatch(cli: Cli, config_dir: &std::path::Path) -> anyhow::Result<()> {
                 branch,
                 base,
                 no_fetch,
+                ephemeral,
+                ttl,
             };
             grove::cli::new::run(&args, &cx).map_err(Into::into)
         }
@@ -120,12 +124,16 @@ fn dispatch(cli: Cli, config_dir: &std::path::Path) -> anyhow::Result<()> {
             issue,
             branch,
             no_fetch,
+            ephemeral,
+            ttl,
         } => {
             let args = grove::cli::fork::ForkArgs {
                 positionals,
                 issue,
                 branch,
                 no_fetch,
+                ephemeral,
+                ttl,
             };
             grove::cli::fork::run(&args, &cx).map_err(Into::into)
         }

@@ -57,6 +57,14 @@ pub enum Command {
         base: Option<String>,
         #[arg(long)]
         no_fetch: bool,
+        /// Place the worktree under `.scratch/` and record a TTL-based expiry
+        /// instead of a durable top-level project.
+        #[arg(long)]
+        ephemeral: bool,
+        /// TTL for `--ephemeral` (e.g. `14d`, `48h`, `30m`). Defaults to 14d.
+        /// Has no effect without `--ephemeral`.
+        #[arg(long)]
+        ttl: Option<String>,
     },
     /// Fork an existing project's branch into a new worktree
     Fork {
@@ -67,6 +75,14 @@ pub enum Command {
         branch: Option<String>,
         #[arg(long)]
         no_fetch: bool,
+        /// Place the worktree under `.scratch/` and record a TTL-based expiry
+        /// instead of a durable top-level project.
+        #[arg(long)]
+        ephemeral: bool,
+        /// TTL for `--ephemeral` (e.g. `14d`, `48h`, `30m`). Defaults to 14d.
+        /// Has no effect without `--ephemeral`.
+        #[arg(long)]
+        ttl: Option<String>,
     },
     /// List all projects
     List {

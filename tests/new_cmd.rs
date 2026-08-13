@@ -185,6 +185,8 @@ fn new_with_issue_creates_branch_and_worktree() {
         branch: None,
         base: None,
         no_fetch: true,
+        ephemeral: false,
+        ttl: None,
     };
 
     run(&args, &cx).expect("grove new should succeed");
@@ -232,6 +234,8 @@ fn new_no_issue_no_branch_uses_tag_as_branch() {
         branch: None,
         base: None,
         no_fetch: true,
+        ephemeral: false,
+        ttl: None,
     };
 
     run(&args, &cx).expect("grove new should succeed");
@@ -270,6 +274,8 @@ fn new_duplicate_tag_returns_error() {
         branch: None,
         base: None,
         no_fetch: true,
+        ephemeral: false,
+        ttl: None,
     };
     run(&args, &cx).expect("first grove new should succeed");
 
@@ -289,6 +295,8 @@ fn new_duplicate_tag_returns_error() {
         branch: None,
         base: None,
         no_fetch: true,
+        ephemeral: false,
+        ttl: None,
     };
     let err = run(&args2, &cx2).unwrap_err();
     let msg = err.to_string();
@@ -300,4 +308,132 @@ fn new_duplicate_tag_returns_error() {
         msg.contains("already exists"),
         "error should indicate duplicate, got: {msg}"
     );
+}
+
+/// bd-grove-lifecycle-p0ur.6 AC: `--ephemeral` places the worktree under
+/// `<work_dir>/.scratch/<tag>` and registers an expiry (default 14d applied
+/// when `--ttl` is omitted).
+#[test]
+fn new_ephemeral_lands_under_scratch_with_default_ttl() {
+    let (_bare, clone) = make_bare_and_clone("if");
+    let work_dir = TempDir::new().unwrap();
+    let grove_dir_path = work_dir.path().join(".grove");
+
+    let cx = make_context(
+        clone.path(),
+        work_dir.path(),
+        &grove_dir_path,
+        None,
+        "if",
+        "master",
+    );
+
+    let before = time::OffsetDateTime::now_utc();
+    let args = NewArgs {
+        tag: "probe".to_string(),
+        issue: None,
+        branch: None,
+        base: None,
+        no_fetch: true,
+        ephemeral: true,
+        ttl: None,
+    };
+    run(&args, &cx).expect("grove new --ephemeral should succeed");
+    let after = time::OffsetDateTime::now_utc();
+
+    let expected_wt = work_dir.path().join(".scratch").join("probe");
+    assert!(
+        worktree_exists(clone.path(), &expected_wt),
+        "ephemeral worktree should exist under .scratch at {}",
+        expected_wt.display()
+    );
+
+    let reg = Registry::load(&grove_dir_path).unwrap();
+    let proj = reg.projects.get("probe").expect("project in registry");
+    assert_eq!(proj.path, expected_wt);
+    let expires_at = proj
+        .expires_at
+        .expect("ephemeral project should have expires_at");
+    let expected_min = before + time::Duration::days(14);
+    let expected_max = after + time::Duration::days(14);
+    assert!(
+        expires_at >= expected_min && expires_at <= expected_max,
+        "expires_at {expires_at} should be ~14d from creation ({expected_min}..={expected_max})"
+    );
+}
+
+/// bd-grove-lifecycle-p0ur.6 AC: an explicit `--ttl` overrides the 14d default.
+#[test]
+fn new_ephemeral_with_explicit_ttl() {
+    let (_bare, clone) = make_bare_and_clone("if");
+    let work_dir = TempDir::new().unwrap();
+    let grove_dir_path = work_dir.path().join(".grove");
+
+    let cx = make_context(
+        clone.path(),
+        work_dir.path(),
+        &grove_dir_path,
+        None,
+        "if",
+        "master",
+    );
+
+    let before = time::OffsetDateTime::now_utc();
+    let args = NewArgs {
+        tag: "short-lived".to_string(),
+        issue: None,
+        branch: None,
+        base: None,
+        no_fetch: true,
+        ephemeral: true,
+        ttl: Some("48h".to_string()),
+    };
+    run(&args, &cx).expect("grove new --ephemeral --ttl 48h should succeed");
+
+    let reg = Registry::load(&grove_dir_path).unwrap();
+    let proj = reg
+        .projects
+        .get("short-lived")
+        .expect("project in registry");
+    let expires_at = proj
+        .expires_at
+        .expect("ephemeral project should have expires_at");
+    assert!(
+        (expires_at - before).whole_hours() <= 49 && (expires_at - before).whole_hours() >= 47,
+        "expires_at should be ~48h from creation, got {}h",
+        (expires_at - before).whole_hours()
+    );
+}
+
+/// A plain (non-ephemeral) `grove new` never sets `expires_at`.
+#[test]
+fn new_non_ephemeral_has_no_expiry() {
+    let (_bare, clone) = make_bare_and_clone("if");
+    let work_dir = TempDir::new().unwrap();
+    let grove_dir_path = work_dir.path().join(".grove");
+
+    let cx = make_context(
+        clone.path(),
+        work_dir.path(),
+        &grove_dir_path,
+        None,
+        "if",
+        "master",
+    );
+
+    let args = NewArgs {
+        tag: "durable".to_string(),
+        issue: None,
+        branch: None,
+        base: None,
+        no_fetch: true,
+        ephemeral: false,
+        ttl: None,
+    };
+    run(&args, &cx).expect("grove new should succeed");
+
+    let reg = Registry::load(&grove_dir_path).unwrap();
+    let proj = reg.projects.get("durable").expect("project in registry");
+    assert!(proj.expires_at.is_none(), "durable project must not expire");
+    assert_eq!(proj.path, work_dir.path().join("durable"));
 }

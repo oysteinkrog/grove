@@ -150,6 +150,7 @@ impl GitFixture {
             created: OffsetDateTime::now_utc(),
             issue: None,
             frozen: false,
+            expires_at: None,
         }
     }
 }
