@@ -17,7 +17,8 @@ use crate::registry::Registry;
 
 use super::guards::{self, ProbeContext, QUICK_GIT_TIMEOUT};
 use super::{
-    Category, Finding, GcOptions, GcPlan, Layout, Remedy, classify_worktree_path, exec, paths_equal,
+    ALL_CATEGORIES, Category, Finding, GcOptions, GcPlan, Layout, Remedy, classify_worktree_path,
+    exec, paths_equal,
 };
 
 /// One entry of `git worktree list --porcelain`.
@@ -79,6 +80,17 @@ pub struct Scanner<'a> {
 impl Scanner<'_> {
     /// Run every category in order and return the resulting plan.
     pub fn scan(&self) -> GcPlan {
+        self.scan_streaming(|_, _| {})
+    }
+
+    /// Run every category in order, handing each to `on_category` the moment it
+    /// finishes so a caller can print it before the rest of the scan runs.
+    ///
+    /// The callback gets the whole plan rather than a slice of it because a
+    /// category's findings live in `plan.findings` alongside everyone else's;
+    /// `GcPlan::in_category` is how the renderer picks out the one that just
+    /// completed.
+    pub fn scan_streaming(&self, mut on_category: impl FnMut(Category, &GcPlan)) -> GcPlan {
         let mut plan = GcPlan::default();
 
         let worktrees = match exec::git(
@@ -100,14 +112,24 @@ impl Scanner<'_> {
         // batch did not cover, so this is a shortcut, never the only answer.
         let containment = self.batch_containment(&worktrees);
 
-        self.scan_stale_registry_entries(&mut plan);
-        self.scan_unregistered_worktrees(&worktrees, &containment, &mut plan);
-        self.scan_foreign_directories(&worktrees, &mut plan);
-        self.scan_expired_ephemerals(&containment, &mut plan);
-        self.scan_harness_worktrees(&containment, &mut plan);
-        self.scan_prunable_metadata(&mut plan);
-        super::merged::scan(self, &containment, &mut plan);
-        super::archive::scan(self.layout, self.opts, &mut plan);
+        for category in ALL_CATEGORIES {
+            self.announce(category);
+            match category {
+                Category::StaleRegistryEntry => self.scan_stale_registry_entries(&mut plan),
+                Category::UnregisteredWorktree => {
+                    self.scan_unregistered_worktrees(&worktrees, &containment, &mut plan)
+                }
+                Category::ForeignDirectory => self.scan_foreign_directories(&worktrees, &mut plan),
+                Category::ExpiredEphemeral => self.scan_expired_ephemerals(&containment, &mut plan),
+                Category::HarnessWorktree => self.scan_harness_worktrees(&containment, &mut plan),
+                Category::PrunableMetadata => self.scan_prunable_metadata(&mut plan),
+                Category::MergedProject => super::merged::scan(self, &containment, &mut plan),
+                Category::ArchiveContents => {
+                    super::archive::scan(self.layout, self.opts, &mut plan)
+                }
+            }
+            on_category(category, &plan);
+        }
 
         for note in &self.probes.notes {
             plan.warn(note.clone());
@@ -134,9 +156,15 @@ impl Scanner<'_> {
         guards::RemoteContainment::batch(&self.layout.main_repo, &oids)
     }
 
-    fn progress(&self, index: usize, total: usize, what: &str) {
+    /// Say which category is starting, before it does any work.
+    ///
+    /// Emitted for every category, including ones that turn out to have nothing
+    /// to inspect. `inspect_concurrently` reports per item, which says nothing
+    /// at all when a category finds no candidates, and a run that spent 105
+    /// seconds in two such categories in a row read on the terminal as a hang.
+    fn announce(&self, category: Category) {
         if self.opts.progress {
-            eprintln!("[gc] ({index}/{total}) {what}");
+            eprintln!("[gc] category {} — {}", category.number(), category.title());
         }
     }
 
@@ -331,14 +359,15 @@ impl Scanner<'_> {
         }
         dirs.sort();
 
-        for path in dirs {
-            let mut finding = Finding::new(Category::ForeignDirectory, dir_label(&path), &path);
-            finding = finding.detail(describe_foreign_dir(&path));
-            if let Some(age) = self.age_of(&path) {
+        let findings = self.inspect_concurrently(&dirs, "foreign dir", |path| {
+            let mut finding = Finding::new(Category::ForeignDirectory, dir_label(path), path);
+            finding = finding.detail(describe_foreign_dir(path));
+            if let Some(age) = self.age_of(path) {
                 finding = finding.detail(format!("last touched {}", guards::humanize_age(age)));
             }
-            plan.findings.push(finding);
-        }
+            finding
+        });
+        plan.findings.extend(findings);
     }
 
     // ── category 4 ───────────────────────────────────────────────────────────
@@ -347,17 +376,21 @@ impl Scanner<'_> {
     /// elapsed, plus unregistered `.scratch` directories older than the default
     /// TTL (raw clones dropped there by hand or by a hook).
     fn scan_expired_ephemerals(&self, containment: &guards::RemoteContainment, plan: &mut GcPlan) {
-        for (tag, project) in &self.registry.projects {
-            if !project.is_expired(self.opts.now) || !project.path.exists() {
-                continue;
-            }
+        let expired: Vec<(&String, &crate::registry::Project)> = self
+            .registry
+            .projects
+            .iter()
+            .filter(|(_, p)| p.is_expired(self.opts.now) && p.path.exists())
+            .collect();
+
+        let findings = self.inspect_concurrently(&expired, "ephemeral", |(tag, project)| {
             let expired_for = project
                 .expires_at
                 .map(|e| guards::humanize_age(self.opts.now - e))
                 .unwrap_or_else(|| "unknown".to_string());
 
             let activity = guards::last_filesystem_activity(&project.path);
-            let mut finding = Finding::new(Category::ExpiredEphemeral, tag, &project.path)
+            let mut finding = Finding::new(Category::ExpiredEphemeral, *tag, &project.path)
                 .detail(format!("branch {}", project.branch))
                 .detail(format!("TTL elapsed {expired_for}"));
 
@@ -367,7 +400,7 @@ impl Scanner<'_> {
                         .detail(describe_safety(&safety))
                         .block(safety.blockers())
                         .remedy(Remedy::RemoveEphemeral {
-                            tag: Some(tag.clone()),
+                            tag: Some((*tag).clone()),
                             branch: safety
                                 .branch
                                 .clone()
@@ -382,8 +415,9 @@ impl Scanner<'_> {
                 }
             }
 
-            plan.findings.push(self.apply_liveness(finding, activity));
-        }
+            self.apply_liveness(finding, activity)
+        });
+        plan.findings.extend(findings);
 
         self.scan_unregistered_scratch(containment, plan);
     }
@@ -416,31 +450,34 @@ impl Scanner<'_> {
             .collect();
         dirs.sort();
 
-        for path in dirs {
-            let activity = guards::last_filesystem_activity(&path);
+        // Each directory is inspected independently, so the run overlaps them.
+        // Warnings travel back with the finding rather than being written to
+        // the plan in place, which a concurrent closure cannot do.
+        let results = self.inspect_concurrently(&dirs, "scratch dir", |path| {
+            let mut warnings = Vec::new();
+            let activity = guards::last_filesystem_activity(path);
             let Some(age) = activity.map(|t| self.opts.now - t) else {
-                plan.warn(format!("could not stat {}", path.display()));
-                continue;
+                warnings.push(format!("could not stat {}", path.display()));
+                return (None, warnings);
             };
             if age < self.opts.scratch_ttl {
-                continue;
+                return (None, warnings);
             }
 
-            let mut finding = Finding::new(Category::ExpiredEphemeral, dir_label(&path), &path)
+            let mut finding = Finding::new(Category::ExpiredEphemeral, dir_label(path), path)
                 .detail("unregistered .scratch directory")
                 .detail(format!("last touched {}", guards::humanize_age(age)));
 
-            if guards::resolve_git_dir(&path).is_none() {
+            if guards::resolve_git_dir(path).is_none() {
                 // Not a git tree, so gc cannot tell whether anything inside is
                 // worth keeping. Report it and let a human look.
                 finding = finding
                     .detail("not a git tree")
                     .block(["cannot verify contents of a non-git directory".to_string()]);
-                plan.findings.push(self.apply_liveness(finding, activity));
-                continue;
+                return (Some(self.apply_liveness(finding, activity)), warnings);
             }
 
-            match guards::inspect_tree_with(&path, containment) {
+            match guards::inspect_tree_with(path, containment) {
                 Ok(safety) => {
                     finding = finding
                         .detail(describe_safety(&safety))
@@ -457,7 +494,12 @@ impl Scanner<'_> {
                         .block(["worktree state could not be read".to_string()]);
                 }
             }
-            plan.findings.push(self.apply_liveness(finding, activity));
+            (Some(self.apply_liveness(finding, activity)), warnings)
+        });
+
+        for (finding, warnings) in results {
+            plan.findings.extend(finding);
+            plan.warnings.extend(warnings);
         }
     }
 

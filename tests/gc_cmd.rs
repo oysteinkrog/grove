@@ -130,6 +130,22 @@ impl Fixture {
         .scan()
     }
 
+    /// The categories `scan_streaming` handed back, in the order it did.
+    fn streamed_categories(&self, opts: &GcOptions) -> Vec<Category> {
+        let registry = self.registry();
+        let layout = self.layout();
+        let probes = ProbeContext::empty();
+        let mut seen = Vec::new();
+        Scanner {
+            layout: &layout,
+            registry: &registry,
+            opts,
+            probes: &probes,
+        }
+        .scan_streaming(|category, _| seen.push(category));
+        seen
+    }
+
     /// Apply everything `--yes` would apply, returning the messages.
     fn apply_unattended(&self, plan: &GcPlan) -> Vec<Result<String, String>> {
         plan.auto_applicable()
@@ -195,6 +211,117 @@ fn find<'a>(plan: &'a GcPlan, category: Category, label: &str) -> &'a Finding {
                 labels(plan, category)
             )
         })
+}
+
+// ── scan mechanics ───────────────────────────────────────────────────────────
+
+#[test]
+fn streaming_reports_every_category_once_and_in_order() {
+    // What makes the report arrive during the scan instead of after it. Every
+    // category must fire, including the ones that find nothing: a category that
+    // stays silent is exactly how a long scan came to look like a hang.
+    let fx = Fixture::new();
+    let mut projects = BTreeMap::new();
+    projects.insert(
+        "wt-kept".to_string(),
+        project(
+            &fx.worktree("wt-kept", "feature/kept"),
+            "feature/kept",
+            None,
+        ),
+    );
+    fx.save_registry(projects);
+
+    let seen = fx.streamed_categories(&GcOptions::for_tests());
+    assert_eq!(
+        seen,
+        grove::gc::ALL_CATEGORIES.to_vec(),
+        "every category should stream exactly once, in order"
+    );
+}
+
+#[test]
+fn streamed_findings_match_the_finished_plan() {
+    // The callback sees the plan as it grows. By the time a category has fired,
+    // that category's findings must already be complete, or a streamed report
+    // would print a category with fewer findings than the final one has.
+    let fx = Fixture::new();
+    let gone = fx.worktree("wt-gone", "feature/gone");
+    let mut projects = BTreeMap::new();
+    projects.insert("wt-gone".to_string(), project(&gone, "feature/gone", None));
+    fx.save_registry(projects);
+    std::fs::remove_dir_all(&gone).unwrap();
+
+    let opts = GcOptions::for_tests();
+    let registry = fx.registry();
+    let layout = fx.layout();
+    let probes = ProbeContext::empty();
+    let scanner = Scanner {
+        layout: &layout,
+        registry: &registry,
+        opts: &opts,
+        probes: &probes,
+    };
+
+    let mut at_stream_time = Vec::new();
+    let plan = scanner.scan_streaming(|category, plan| {
+        if category == Category::StaleRegistryEntry {
+            at_stream_time = labels(plan, category);
+        }
+    });
+
+    assert_eq!(at_stream_time, vec!["wt-gone"]);
+    assert_eq!(
+        at_stream_time,
+        labels(&plan, Category::StaleRegistryEntry),
+        "the streamed view of a category must equal its final view"
+    );
+}
+
+#[test]
+fn concurrent_and_serial_scans_of_the_same_work_dir_agree() {
+    // Categories 3 and 4 moved onto the shared thread pool. Their findings must
+    // not depend on how many threads ran them, order included: the report is
+    // compared between runs by hand often enough for stability to matter.
+    let fx = Fixture::new();
+    let mut projects = BTreeMap::new();
+    projects.insert(
+        "wt-live".to_string(),
+        project(
+            &fx.worktree("wt-live", "feature/live"),
+            "feature/live",
+            None,
+        ),
+    );
+    projects.insert(
+        "wt-expired".to_string(),
+        project(
+            &fx.worktree_at(&fx.work_dir.join(".scratch/wt-expired"), "scratch/expired"),
+            "feature/expired",
+            Some(OffsetDateTime::now_utc() - Duration::days(2)),
+        ),
+    );
+    fx.save_registry(projects);
+    std::fs::create_dir_all(fx.work_dir.join("a-foreign-dir")).unwrap();
+    std::fs::create_dir_all(fx.work_dir.join("z-foreign-dir")).unwrap();
+
+    let serial = GcOptions {
+        scan_threads: 1,
+        ..GcOptions::for_tests()
+    };
+    let concurrent = GcOptions {
+        scan_threads: 4,
+        ..GcOptions::for_tests()
+    };
+
+    for category in [Category::ForeignDirectory, Category::ExpiredEphemeral] {
+        assert_eq!(
+            labels(&fx.plan(&serial), category),
+            labels(&fx.plan(&concurrent), category),
+            "category {} differs between 1 and 4 threads",
+            category.number()
+        );
+    }
 }
 
 // ── category 1: stale registry entries ───────────────────────────────────────

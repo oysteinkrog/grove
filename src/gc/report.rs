@@ -8,7 +8,7 @@ use std::fmt::Write as _;
 
 use crate::display::dim;
 
-use super::{ALL_CATEGORIES, GcPlan, Layout};
+use super::{ALL_CATEGORIES, Category, GcPlan, Layout};
 
 /// What the run is authorised to do, as told to the reader up front.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,49 +40,77 @@ impl Mode {
     }
 }
 
+/// The whole report as one string.
+///
+/// Composed from the same pieces the streaming path prints one at a time, so
+/// the two cannot drift: a category rendered mid-scan reads exactly as it would
+/// at the end.
 pub fn render(plan: &GcPlan, mode: Mode, layout: &Layout) -> String {
+    let mut out = render_header(mode, layout);
+    for category in ALL_CATEGORIES {
+        out.push_str(&render_category(plan, category));
+    }
+    out.push_str(&render_warnings(plan));
+    let _ = writeln!(out, "{}", summary(plan, mode));
+    out
+}
+
+/// The two lines that name the work_dir and say what the run may change.
+pub fn render_header(mode: Mode, layout: &Layout) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "grove gc — {}", layout.work_dir.display());
     let _ = writeln!(out, "{}", dim(mode.banner()));
     let _ = writeln!(out);
+    out
+}
 
-    for category in ALL_CATEGORIES {
-        let findings: Vec<_> = plan.in_category(category).collect();
-        let _ = writeln!(
-            out,
-            "[{}] {} ({})",
-            category.number(),
-            category.title(),
-            findings.len()
-        );
-        let _ = writeln!(out, "    {}", dim(category.policy()));
-        if findings.is_empty() {
-            let _ = writeln!(out, "    {}", dim("nothing found"));
-            let _ = writeln!(out);
-            continue;
-        }
-        for finding in findings {
-            let _ = writeln!(out, "    {}", finding.label);
-            let _ = writeln!(out, "      {}", dim(finding.path.display().to_string()));
-            for detail in &finding.details {
-                let _ = writeln!(out, "      {}", dim(detail));
-            }
-            for blocker in &finding.blockers {
-                let _ = writeln!(out, "      blocked: {blocker}");
-            }
-        }
+/// One category's heading, policy line and findings.
+///
+/// Printed as soon as its scan finishes rather than held to the end. A scan
+/// over a real work_dir spends minutes per category, and a report that arrives
+/// only once every category is done is indistinguishable from a hang: the run
+/// this was written for was killed at five minutes having shown nothing.
+pub fn render_category(plan: &GcPlan, category: Category) -> String {
+    let mut out = String::new();
+    let findings: Vec<_> = plan.in_category(category).collect();
+    let _ = writeln!(
+        out,
+        "[{}] {} ({})",
+        category.number(),
+        category.title(),
+        findings.len()
+    );
+    let _ = writeln!(out, "    {}", dim(category.policy()));
+    if findings.is_empty() {
+        let _ = writeln!(out, "    {}", dim("nothing found"));
         let _ = writeln!(out);
+        return out;
     }
-
-    if !plan.warnings.is_empty() {
-        let _ = writeln!(out, "Warnings ({})", plan.warnings.len());
-        for warning in &plan.warnings {
-            let _ = writeln!(out, "    {warning}");
+    for finding in findings {
+        let _ = writeln!(out, "    {}", finding.label);
+        let _ = writeln!(out, "      {}", dim(finding.path.display().to_string()));
+        for detail in &finding.details {
+            let _ = writeln!(out, "      {}", dim(detail));
         }
-        let _ = writeln!(out);
+        for blocker in &finding.blockers {
+            let _ = writeln!(out, "      blocked: {blocker}");
+        }
     }
+    let _ = writeln!(out);
+    out
+}
 
-    let _ = writeln!(out, "{}", summary(plan, mode));
+/// Whatever probes could not answer, or the empty string when all of them did.
+pub fn render_warnings(plan: &GcPlan) -> String {
+    let mut out = String::new();
+    if plan.warnings.is_empty() {
+        return out;
+    }
+    let _ = writeln!(out, "Warnings ({})", plan.warnings.len());
+    for warning in &plan.warnings {
+        let _ = writeln!(out, "    {warning}");
+    }
+    let _ = writeln!(out);
     out
 }
 
@@ -111,7 +139,7 @@ pub fn summary(plan: &GcPlan, mode: Mode) -> String {
 mod tests {
     use std::path::PathBuf;
 
-    use super::super::{Category, Finding, Remedy};
+    use super::super::{Finding, Remedy};
     use super::*;
 
     fn layout() -> Layout {
@@ -133,6 +161,61 @@ mod tests {
             );
         }
         assert!(text.contains("Nothing to report"));
+    }
+
+    #[test]
+    fn streaming_the_pieces_reproduces_the_whole_report() {
+        // The streaming path in `cli::gc` prints header, then one category at a
+        // time, then warnings and summary. Concatenated that must equal what
+        // `render` produces, or a category read mid-scan differs from the same
+        // category read at the end.
+        let mut plan = GcPlan::default();
+        plan.findings.push(
+            Finding::new(Category::StaleRegistryEntry, "gone", "/c/work/desktop/gone")
+                .detail("registered path does not exist")
+                .remedy(Remedy::DropRegistryEntry {
+                    tag: "gone".to_string(),
+                }),
+        );
+        plan.warn("agent-mail reservations unavailable");
+
+        let whole = render(&plan, Mode::DryRun, &layout());
+
+        let mut streamed = render_header(Mode::DryRun, &layout());
+        for category in ALL_CATEGORIES {
+            streamed.push_str(&render_category(&plan, category));
+        }
+        streamed.push_str(&render_warnings(&plan));
+        streamed.push_str(&format!("{}\n", summary(&plan, Mode::DryRun)));
+
+        assert_eq!(whole, streamed);
+    }
+
+    #[test]
+    fn a_category_renders_only_its_own_findings() {
+        let mut plan = GcPlan::default();
+        plan.findings.push(Finding::new(
+            Category::StaleRegistryEntry,
+            "in-category-1",
+            "/c/work/desktop/one",
+        ));
+        plan.findings.push(Finding::new(
+            Category::ArchiveContents,
+            "in-category-8",
+            "/c/work/desktop/.archive/eight",
+        ));
+
+        let first = render_category(&plan, Category::StaleRegistryEntry);
+        assert!(first.contains("in-category-1"));
+        assert!(
+            !first.contains("in-category-8"),
+            "category 1 leaked a category 8 finding: {first}"
+        );
+    }
+
+    #[test]
+    fn warnings_render_to_nothing_when_there_are_none() {
+        assert_eq!(render_warnings(&GcPlan::default()), "");
     }
 
     #[test]

@@ -48,9 +48,20 @@ pub fn run(args: &GcArgs, cx: &RepoContext) -> anyhow::Result<()> {
         opts: &opts,
         probes: &probes,
     };
-    let plan = scanner.scan();
 
-    print!("{}", report::render(&plan, mode, &layout));
+    // Print each category as its scan finishes, flushing as we go, rather than
+    // holding the whole report until the end. A scan over a real work_dir
+    // spends minutes per category; the run that prompted this printed nothing
+    // at all before it was killed at five minutes.
+    print!("{}", report::render_header(mode, &layout));
+    let _ = std::io::stdout().flush();
+    let plan = scanner.scan_streaming(|category, plan| {
+        print!("{}", report::render_category(plan, category));
+        let _ = std::io::stdout().flush();
+    });
+    print!("{}", report::render_warnings(&plan));
+    println!("{}", report::summary(&plan, mode));
+    let _ = std::io::stdout().flush();
 
     if !mode.applies_changes() {
         return Ok(());
