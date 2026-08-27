@@ -316,7 +316,21 @@ impl PullRequestIndex {
     }
 
     /// One `gh pr list` for the whole repo, indexed by head branch.
+    ///
+    /// Skipped outright on a repo with more pull requests than the listing can
+    /// hold, because the listing would be refused as truncated anyway and the
+    /// attempt is not free: 8s at the 1000 limit on the repo this was written
+    /// for, 26s at 5000, and still truncated. A single `--head` query is 0.5s,
+    /// so falling straight back is cheaper than finding out the hard way.
     pub fn fetch(main_repo: &std::path::Path) -> (Self, Option<String>) {
+        if let Some(newest) = newest_pull_request_number(main_repo)
+            && newest > PR_LIST_LIMIT as u64
+        {
+            // Nothing is wrong here, so this is not a warning: asking per
+            // branch is the correct plan for a repo this size, not a failure.
+            return (Self::empty(), None);
+        }
+
         let limit = PR_LIST_LIMIT.to_string();
         let out = match exec::run(
             "gh",
@@ -413,6 +427,33 @@ impl PullRequestIndex {
         }
         pull_request_state(main_repo, branch)
     }
+}
+
+/// The newest pull request number, as an upper bound on how many the repo has.
+///
+/// One row, so it costs about half a second. GitHub numbers pull requests and
+/// issues from one counter, so this over-estimates the pull request count and
+/// never under-estimates it. That is the safe direction: it can send a repo to
+/// the per-branch path that the batch would in fact have covered, which costs
+/// 0.5s per branch, where the reverse would waste the whole listing.
+fn newest_pull_request_number(main_repo: &std::path::Path) -> Option<u64> {
+    let out = exec::run(
+        "gh",
+        &[
+            "pr", "list", "--state", "all", "--limit", "1", "--json", "number",
+        ],
+        Some(main_repo),
+        GH_TIMEOUT,
+    )
+    .ok()?;
+    if !out.success {
+        return None;
+    }
+    let parsed: Vec<serde_json::Value> = serde_json::from_str(out.stdout.trim()).ok()?;
+    parsed
+        .first()
+        .and_then(|pr| pr.get("number"))
+        .and_then(|n| n.as_u64())
 }
 
 fn describe_pr(pr: &serde_json::Value) -> String {
