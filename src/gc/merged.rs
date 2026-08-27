@@ -11,6 +11,7 @@
 //!
 //! Nothing here mutates. The output is a list of `grove done` candidates.
 
+use std::collections::HashMap;
 use std::time::Duration as StdDuration;
 
 use super::guards::{self, QUICK_GIT_TIMEOUT};
@@ -124,6 +125,18 @@ pub(super) fn scan(
         .filter(|(_, p)| !p.is_expired(scanner.opts.now))
         .collect();
 
+    // One listing for the whole repo instead of a network round trip per
+    // absorbed project. Built before the inspection so every worker shares it.
+    let pull_requests = if scanner.opts.query_pr_state {
+        let (index, note) = PullRequestIndex::fetch(&scanner.layout.main_repo);
+        if let Some(note) = note {
+            plan.warn(note);
+        }
+        index
+    } else {
+        PullRequestIndex::empty()
+    };
+
     // Each project is inspected independently, so the run overlaps them and
     // carries any warnings back out rather than writing to the plan in place.
     let results = scanner.inspect_concurrently(&projects, "merge state", |(tag, project)| {
@@ -157,7 +170,7 @@ pub(super) fn scan(
             .detail("clean worktree");
 
         if scanner.opts.query_pr_state {
-            match pull_request_state(&scanner.layout.main_repo, &project.branch) {
+            match pull_requests.states_for(&scanner.layout.main_repo, &project.branch) {
                 Ok(prs) if prs.is_empty() => {
                     finding = finding.detail("no pull request found for the branch");
                 }
@@ -273,6 +286,144 @@ fn subject_is_in_base(path: &std::path::Path, base: &str, sha: &str) -> bool {
     .is_ok_and(|out| !out.trim().is_empty())
 }
 
+/// Cap on the batched listing. Above this the answer is treated as truncated
+/// and every branch falls back to its own query, because a branch missing from
+/// a truncated listing is indistinguishable from a branch with no PR.
+const PR_LIST_LIMIT: usize = 1000;
+
+/// `gh` fetching up to [`PR_LIST_LIMIT`] pull requests needs more than the
+/// per-branch leash.
+const GH_BATCH_TIMEOUT: StdDuration = StdDuration::from_secs(90);
+
+/// Pull request state for every branch, from one `gh` call.
+///
+/// The per-branch query is a network round trip each, on a 20s timeout, run for
+/// every project whose work looks absorbed. One listing answers for all of
+/// them. Truncation is the only real hazard: if the listing came back at the
+/// limit, absence from it means nothing, so the index reports itself unusable
+/// and callers go back to asking per branch.
+#[derive(Debug, Default)]
+pub struct PullRequestIndex {
+    by_branch: HashMap<String, Vec<String>>,
+    /// The listing was complete, so a branch absent from it genuinely has no PR.
+    complete: bool,
+}
+
+impl PullRequestIndex {
+    /// An index that answers nothing, so every lookup falls back.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// One `gh pr list` for the whole repo, indexed by head branch.
+    pub fn fetch(main_repo: &std::path::Path) -> (Self, Option<String>) {
+        let limit = PR_LIST_LIMIT.to_string();
+        let out = match exec::run(
+            "gh",
+            &[
+                "pr",
+                "list",
+                "--state",
+                "all",
+                "--limit",
+                &limit,
+                "--json",
+                "number,state,headRefName",
+            ],
+            Some(main_repo),
+            GH_BATCH_TIMEOUT,
+        ) {
+            Ok(out) if out.success => out,
+            Ok(out) => {
+                let detail = out.stderr.trim().lines().next().unwrap_or("no detail");
+                return (
+                    Self::empty(),
+                    Some(format!(
+                        "gh pull request listing failed ({detail}); merge state is verified per branch instead"
+                    )),
+                );
+            }
+            Err(e) => {
+                return (
+                    Self::empty(),
+                    Some(format!(
+                        "gh pull request listing unavailable ({e}); merge state is verified per branch instead"
+                    )),
+                );
+            }
+        };
+
+        let parsed: Vec<serde_json::Value> = match serde_json::from_str(out.stdout.trim()) {
+            Ok(parsed) => parsed,
+            Err(e) => {
+                return (
+                    Self::empty(),
+                    Some(format!(
+                        "gh pull request listing unreadable ({e}); merge state is verified per branch instead"
+                    )),
+                );
+            }
+        };
+
+        Self::index_rows(&parsed)
+    }
+
+    /// Index a listing, or refuse it as truncated.
+    ///
+    /// Pure, so the truncation rule can be tested without reaching for `gh`.
+    fn index_rows(parsed: &[serde_json::Value]) -> (Self, Option<String>) {
+        if parsed.len() >= PR_LIST_LIMIT {
+            return (
+                Self::empty(),
+                Some(format!(
+                    "gh returned {PR_LIST_LIMIT} pull requests, the listing limit; merge state is verified per branch instead"
+                )),
+            );
+        }
+
+        let mut by_branch: HashMap<String, Vec<String>> = HashMap::new();
+        for pr in parsed {
+            let Some(branch) = pr.get("headRefName").and_then(|b| b.as_str()) else {
+                continue;
+            };
+            by_branch
+                .entry(branch.to_string())
+                .or_default()
+                .push(describe_pr(pr));
+        }
+
+        (
+            Self {
+                by_branch,
+                complete: true,
+            },
+            None,
+        )
+    }
+
+    /// Pull requests opened from `branch`, from the listing when it is usable
+    /// and from a single `gh` call otherwise.
+    pub fn states_for(
+        &self,
+        main_repo: &std::path::Path,
+        branch: &str,
+    ) -> Result<Vec<String>, String> {
+        if self.complete {
+            return Ok(self.by_branch.get(branch).cloned().unwrap_or_default());
+        }
+        pull_request_state(main_repo, branch)
+    }
+}
+
+fn describe_pr(pr: &serde_json::Value) -> String {
+    let number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
+    let state = pr
+        .get("state")
+        .and_then(|s| s.as_str())
+        .unwrap_or("UNKNOWN");
+    format!("#{number} {state}")
+}
+
 /// Ask `gh` for the pull requests opened from `branch`. Best effort: any
 /// failure — no `gh`, no auth, no network, slow API — comes back as an error
 /// the caller renders as "merge state unverified".
@@ -305,17 +456,7 @@ fn pull_request_state(main_repo: &std::path::Path, branch: &str) -> Result<Vec<S
 
     let parsed: Vec<serde_json::Value> = serde_json::from_str(out.stdout.trim())
         .map_err(|e| format!("gh output unreadable: {e}"))?;
-    Ok(parsed
-        .iter()
-        .map(|pr| {
-            let number = pr.get("number").and_then(|n| n.as_u64()).unwrap_or(0);
-            let state = pr
-                .get("state")
-                .and_then(|s| s.as_str())
-                .unwrap_or("UNKNOWN");
-            format!("#{number} {state}")
-        })
-        .collect())
+    Ok(parsed.iter().map(describe_pr).collect())
 }
 
 #[cfg(test)]
@@ -355,6 +496,81 @@ mod tests {
         assert_eq!(
             subject_verdict(5, 2),
             MergeState::NotMerged { remaining: 3 }
+        );
+    }
+
+    fn pr_row(number: u64, state: &str, branch: &str) -> serde_json::Value {
+        serde_json::json!({ "number": number, "state": state, "headRefName": branch })
+    }
+
+    #[test]
+    fn a_listing_answers_for_every_branch_in_it() {
+        let rows = vec![
+            pr_row(1, "MERGED", "feature/one"),
+            pr_row(2, "CLOSED", "feature/two"),
+            pr_row(3, "OPEN", "feature/two"),
+        ];
+        let (index, note) = PullRequestIndex::index_rows(&rows);
+        assert!(note.is_none(), "{note:?}");
+
+        let repo = std::path::Path::new("/nonexistent");
+        assert_eq!(
+            index.states_for(repo, "feature/one").unwrap(),
+            vec!["#1 MERGED"]
+        );
+        assert_eq!(
+            index.states_for(repo, "feature/two").unwrap(),
+            vec!["#2 CLOSED", "#3 OPEN"],
+            "both pull requests for a branch should be reported"
+        );
+    }
+
+    #[test]
+    fn a_branch_absent_from_a_complete_listing_has_no_pull_request() {
+        // The whole point of batching: absence is an answer, so no per-branch
+        // call is made. The repo path is deliberately bogus — reaching `gh`
+        // here would fail the test rather than pass it quietly.
+        let rows = vec![pr_row(1, "MERGED", "feature/one")];
+        let (index, _) = PullRequestIndex::index_rows(&rows);
+        assert_eq!(
+            index
+                .states_for(std::path::Path::new("/nonexistent"), "feature/absent")
+                .unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_truncated_listing_is_refused_rather_than_trusted() {
+        // At the limit, a branch missing from the listing is indistinguishable
+        // from a branch with no pull request, so the index must not answer.
+        let rows: Vec<serde_json::Value> = (0..PR_LIST_LIMIT)
+            .map(|n| pr_row(n as u64, "MERGED", &format!("feature/{n}")))
+            .collect();
+        let (index, note) = PullRequestIndex::index_rows(&rows);
+        assert!(
+            note.is_some_and(|n| n.contains("listing limit")),
+            "truncation must be reported as a warning"
+        );
+        assert!(
+            !index.complete,
+            "a truncated listing must fall back per branch"
+        );
+    }
+
+    #[test]
+    fn rows_without_a_head_branch_are_skipped_not_fatal() {
+        let rows = vec![
+            serde_json::json!({ "number": 1, "state": "MERGED" }),
+            pr_row(2, "OPEN", "feature/real"),
+        ];
+        let (index, note) = PullRequestIndex::index_rows(&rows);
+        assert!(note.is_none());
+        assert_eq!(
+            index
+                .states_for(std::path::Path::new("/nonexistent"), "feature/real")
+                .unwrap(),
+            vec!["#2 OPEN"]
         );
     }
 
