@@ -111,7 +111,11 @@ pub fn subject_verdict(unmerged: usize, subject_hits: usize) -> MergeState {
     }
 }
 
-pub(super) fn scan(scanner: &Scanner<'_>, plan: &mut GcPlan) {
+pub(super) fn scan(
+    scanner: &Scanner<'_>,
+    containment: &guards::RemoteContainment,
+    plan: &mut GcPlan,
+) {
     let projects: Vec<(&String, &crate::registry::Project)> = scanner
         .registry
         .projects
@@ -126,7 +130,7 @@ pub(super) fn scan(scanner: &Scanner<'_>, plan: &mut GcPlan) {
         let mut warnings = Vec::new();
 
         let activity = guards::last_filesystem_activity(&project.path);
-        let safety = match guards::inspect_tree(&project.path) {
+        let safety = match guards::inspect_tree_with(&project.path, containment) {
             Ok(safety) => safety,
             Err(e) => {
                 warnings.push(format!("{tag}: could not read worktree state ({e})"));

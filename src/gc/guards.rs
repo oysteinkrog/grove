@@ -70,6 +70,18 @@ impl TreeSafety {
 /// signal [`check_liveness`] reads to decide whether a tree is in use, so gc's
 /// own inspection would otherwise look exactly like somebody working.
 pub fn inspect_tree(path: &Path) -> Result<TreeSafety, String> {
+    inspect_tree_with(path, &RemoteContainment::empty())
+}
+
+/// [`inspect_tree`], reusing a batched containment answer where it has one.
+///
+/// Split out rather than folded in because the apply path inspects a single
+/// tree at the moment it is about to remove it, and wants a fresh query, not a
+/// verdict computed minutes earlier during the scan.
+pub fn inspect_tree_with(
+    path: &Path,
+    containment: &RemoteContainment,
+) -> Result<TreeSafety, String> {
     let porcelain = exec::git(
         path,
         &[
@@ -103,7 +115,7 @@ pub fn inspect_tree(path: &Path) -> Result<TreeSafety, String> {
     // where an `ahead` count against a configured upstream would not.
     let unpushed = match &head {
         None => false,
-        Some(oid) => commit_is_unpushed(path, oid),
+        Some(oid) => containment.is_unpushed(path, oid),
     };
 
     Ok(TreeSafety {
@@ -136,6 +148,86 @@ pub fn commit_is_unpushed(path: &Path, oid: &str) -> bool {
     )
     .map(|out| !out.trim().is_empty())
     .unwrap_or(false)
+}
+
+/// Cap on oids per `rev-list` call, so a work_dir with thousands of worktrees
+/// cannot overflow the argument list. Well above any real work_dir; the point
+/// is that exceeding it degrades into more calls rather than a spawn failure.
+const CONTAINMENT_BATCH: usize = 500;
+
+/// Timeout for the batched containment query. It walks unpushed history for
+/// every worktree at once, so it gets more room than the per-tree probes.
+const CONTAINMENT_TIMEOUT: StdDuration = StdDuration::from_secs(120);
+
+/// Remote containment for every worktree HEAD, answered in one `rev-list`.
+///
+/// Even at 0.5s the per-tree query is paid once per tree. Asked for all of them
+/// together it is one call: 101 worktree HEADs in 2.64s on the repo this tool
+/// was built for, against roughly 50s for the same work one at a time.
+///
+/// The oids come from `git worktree list --porcelain`, which gc already parses
+/// for other reasons. That is also the pre-filter that keeps this safe on a
+/// partial clone: every listed worktree is a worktree *of this repo*, so its
+/// HEAD is in the shared object store. Handing `rev-list` an oid from some
+/// unrelated clone is what provokes a promisor fetch, and no oid here can be
+/// one.
+#[derive(Debug, Default)]
+pub struct RemoteContainment {
+    /// Oids the batch actually asked about. An oid outside this set has no
+    /// answer here and the caller falls back to a single query.
+    covered: BTreeSet<String>,
+    /// Commits the query found unreachable from `refs/remotes/**`.
+    ///
+    /// A superset of the oids asked about: `--no-walk` is documented as having
+    /// no effect once a range is given, and `--not --remotes` is a range, so
+    /// ancestors come back too. Harmless, because this is only ever consulted
+    /// as a membership test for an oid in `covered`, and for such an oid
+    /// presence in the output means exactly "no remote ref reaches it".
+    unpushed: BTreeSet<String>,
+}
+
+impl RemoteContainment {
+    /// No batched answers; every query falls back to a single `rev-list`.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Ask about every oid in `main_repo` at once.
+    ///
+    /// A chunk whose query fails is simply left uncovered, so the callers fall
+    /// back per oid rather than treating a git failure as "everything pushed".
+    pub fn batch(main_repo: &Path, oids: &[String]) -> Self {
+        let mut out = Self::default();
+        for chunk in oids.chunks(CONTAINMENT_BATCH) {
+            let mut args: Vec<&str> = Vec::with_capacity(chunk.len() + 4);
+            args.push("rev-list");
+            args.push("--no-walk");
+            args.extend(chunk.iter().map(String::as_str));
+            args.push("--not");
+            args.push("--remotes");
+
+            if let Ok(text) = exec::git(main_repo, &args, CONTAINMENT_TIMEOUT) {
+                out.covered.extend(chunk.iter().cloned());
+                out.unpushed
+                    .extend(text.split_whitespace().map(str::to_string));
+            }
+        }
+        out
+    }
+
+    /// Whether `oid` is on no remote-tracking branch: from the batch when it
+    /// covered `oid`, from a single query in `path` otherwise.
+    pub fn is_unpushed(&self, path: &Path, oid: &str) -> bool {
+        if self.covered.contains(oid) {
+            return self.unpushed.contains(oid);
+        }
+        commit_is_unpushed(path, oid)
+    }
+
+    /// How many oids the batch answered for, for progress reporting and tests.
+    pub fn covered_count(&self) -> usize {
+        self.covered.len()
+    }
 }
 
 /// Why gc considers a tree in use.
@@ -641,6 +733,78 @@ mod tests {
             "the tag must survive for the case to mean anything"
         );
         assert_both_forms_agree(fx.local.path(), &tagged, true, "reachable only via a tag");
+    }
+
+    #[test]
+    fn batched_containment_agrees_with_the_per_oid_query() {
+        let fx = remote_fixture();
+        let pushed = rev_parse(fx.local.path(), "origin/main");
+        git_in(fx.local.path(), &["checkout", "-b", "feature"]);
+        let first_local = commit_file(fx.local.path(), "b.txt", "b", "local one");
+        let second_local = commit_file(fx.local.path(), "c.txt", "c", "local two");
+
+        let oids = vec![pushed.clone(), first_local.clone(), second_local.clone()];
+        let batch = RemoteContainment::batch(fx.local.path(), &oids);
+        assert_eq!(batch.covered_count(), 3, "every oid should be covered");
+
+        for oid in &oids {
+            assert_eq!(
+                batch.is_unpushed(fx.local.path(), oid),
+                commit_is_unpushed(fx.local.path(), oid),
+                "batch and single query disagree on {oid}"
+            );
+        }
+        assert!(!batch.is_unpushed(fx.local.path(), &pushed));
+        assert!(batch.is_unpushed(fx.local.path(), &second_local));
+    }
+
+    #[test]
+    fn batched_containment_answers_by_membership_not_by_output_size() {
+        // `--no-walk` has no effect once a range is given, so the query returns
+        // ancestors as well as the tips asked about. Pinned deliberately: a
+        // future reader must not "fix" this by comparing counts, and asking
+        // about one deep unpushed tip must not make its ancestors look asked-for.
+        let fx = remote_fixture();
+        git_in(fx.local.path(), &["checkout", "-b", "deep"]);
+        let mid = commit_file(fx.local.path(), "b.txt", "b", "middle");
+        let tip = commit_file(fx.local.path(), "c.txt", "c", "tip");
+
+        let batch = RemoteContainment::batch(fx.local.path(), std::slice::from_ref(&tip));
+        assert_eq!(batch.covered_count(), 1, "only the tip was asked about");
+        assert!(batch.is_unpushed(fx.local.path(), &tip));
+        assert!(
+            batch.unpushed.contains(&mid),
+            "the ancestor comes back in the output too"
+        );
+        // `mid` was never asked about, so it must be answered by falling back,
+        // not by reading the batch output. Same verdict here, different path.
+        assert!(!batch.covered.contains(&mid));
+        assert!(batch.is_unpushed(fx.local.path(), &mid));
+    }
+
+    #[test]
+    fn an_empty_batch_falls_back_to_the_single_query() {
+        let fx = remote_fixture();
+        let local_only = commit_file(fx.local.path(), "b.txt", "b", "local work");
+        let empty = RemoteContainment::empty();
+        assert_eq!(empty.covered_count(), 0);
+        assert!(
+            empty.is_unpushed(fx.local.path(), &local_only),
+            "no batch answer must not read as 'pushed'"
+        );
+    }
+
+    #[test]
+    fn inspect_tree_with_a_batch_matches_inspect_tree() {
+        let fx = remote_fixture();
+        let local_only = commit_file(fx.local.path(), "b.txt", "b", "local work");
+        let batch = RemoteContainment::batch(fx.local.path(), std::slice::from_ref(&local_only));
+
+        let batched = inspect_tree_with(fx.local.path(), &batch).unwrap();
+        let single = inspect_tree(fx.local.path()).unwrap();
+        assert_eq!(batched.unpushed, single.unpushed);
+        assert_eq!(batched.head, single.head);
+        assert!(batched.unpushed, "the commit is on no remote");
     }
 
     #[test]

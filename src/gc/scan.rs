@@ -95,19 +95,43 @@ impl Scanner<'_> {
             }
         };
 
+        // One query for every worktree HEAD, before any category asks about a
+        // single tree. Each category still falls back per tree for anything the
+        // batch did not cover, so this is a shortcut, never the only answer.
+        let containment = self.batch_containment(&worktrees);
+
         self.scan_stale_registry_entries(&mut plan);
-        self.scan_unregistered_worktrees(&worktrees, &mut plan);
+        self.scan_unregistered_worktrees(&worktrees, &containment, &mut plan);
         self.scan_foreign_directories(&worktrees, &mut plan);
-        self.scan_expired_ephemerals(&mut plan);
-        self.scan_harness_worktrees(&mut plan);
+        self.scan_expired_ephemerals(&containment, &mut plan);
+        self.scan_harness_worktrees(&containment, &mut plan);
         self.scan_prunable_metadata(&mut plan);
-        super::merged::scan(self, &mut plan);
+        super::merged::scan(self, &containment, &mut plan);
         super::archive::scan(self.layout, self.opts, &mut plan);
 
         for note in &self.probes.notes {
             plan.warn(note.clone());
         }
         plan
+    }
+
+    /// Batched remote containment for every worktree git knows about.
+    ///
+    /// `git worktree list --porcelain` already reports each worktree's HEAD, so
+    /// this costs no extra enumeration. Worktrees of *this* repo only, which is
+    /// what keeps the query off the network on a partial clone.
+    fn batch_containment(&self, worktrees: &[WorktreeEntry]) -> guards::RemoteContainment {
+        let oids: Vec<String> = worktrees.iter().filter_map(|wt| wt.head.clone()).collect();
+        if oids.is_empty() {
+            return guards::RemoteContainment::empty();
+        }
+        if self.opts.progress {
+            eprintln!(
+                "[gc] remote containment for {} worktree head(s)",
+                oids.len()
+            );
+        }
+        guards::RemoteContainment::batch(&self.layout.main_repo, &oids)
     }
 
     fn progress(&self, index: usize, total: usize, what: &str) {
@@ -198,7 +222,12 @@ impl Scanner<'_> {
     ///
     /// Paths under `MASTER/.claude/worktrees` and `.scratch` are excluded here
     /// by [`classify_worktree_path`] — categories 5 and 4 own them.
-    fn scan_unregistered_worktrees(&self, worktrees: &[WorktreeEntry], plan: &mut GcPlan) {
+    fn scan_unregistered_worktrees(
+        &self,
+        worktrees: &[WorktreeEntry],
+        containment: &guards::RemoteContainment,
+        plan: &mut GcPlan,
+    ) {
         let registered = self.registered_paths();
         let candidates: Vec<&WorktreeEntry> = worktrees
             .iter()
@@ -241,7 +270,7 @@ impl Scanner<'_> {
                 None => finding = finding.detail("detached HEAD"),
             }
 
-            match guards::inspect_tree(&wt.path) {
+            match guards::inspect_tree_with(&wt.path, containment) {
                 Ok(safety) => {
                     finding = finding
                         .detail(describe_safety(&safety))
@@ -317,7 +346,7 @@ impl Scanner<'_> {
     /// Expired ephemerals: registered `.scratch` projects whose recorded TTL has
     /// elapsed, plus unregistered `.scratch` directories older than the default
     /// TTL (raw clones dropped there by hand or by a hook).
-    fn scan_expired_ephemerals(&self, plan: &mut GcPlan) {
+    fn scan_expired_ephemerals(&self, containment: &guards::RemoteContainment, plan: &mut GcPlan) {
         for (tag, project) in &self.registry.projects {
             if !project.is_expired(self.opts.now) || !project.path.exists() {
                 continue;
@@ -332,7 +361,7 @@ impl Scanner<'_> {
                 .detail(format!("branch {}", project.branch))
                 .detail(format!("TTL elapsed {expired_for}"));
 
-            match guards::inspect_tree(&project.path) {
+            match guards::inspect_tree_with(&project.path, containment) {
                 Ok(safety) => {
                     finding = finding
                         .detail(describe_safety(&safety))
@@ -356,10 +385,14 @@ impl Scanner<'_> {
             plan.findings.push(self.apply_liveness(finding, activity));
         }
 
-        self.scan_unregistered_scratch(plan);
+        self.scan_unregistered_scratch(containment, plan);
     }
 
-    fn scan_unregistered_scratch(&self, plan: &mut GcPlan) {
+    fn scan_unregistered_scratch(
+        &self,
+        containment: &guards::RemoteContainment,
+        plan: &mut GcPlan,
+    ) {
         let scratch = self.layout.scratch_dir();
         if !scratch.is_dir() {
             return;
@@ -407,7 +440,7 @@ impl Scanner<'_> {
                 continue;
             }
 
-            match guards::inspect_tree(&path) {
+            match guards::inspect_tree_with(&path, containment) {
                 Ok(safety) => {
                     finding = finding
                         .detail(describe_safety(&safety))
@@ -433,7 +466,7 @@ impl Scanner<'_> {
     /// Harness worktrees under `MASTER/.claude/worktrees/agent-*`. A fresh one
     /// belongs to a running agent session, so only stale ones are collectable;
     /// fresh ones are still listed, with the reason they were left alone.
-    fn scan_harness_worktrees(&self, plan: &mut GcPlan) {
+    fn scan_harness_worktrees(&self, containment: &guards::RemoteContainment, plan: &mut GcPlan) {
         let harness = self.layout.harness_dir();
         if !harness.is_dir() {
             return;
@@ -470,7 +503,7 @@ impl Scanner<'_> {
                     finding.block(["still fresh; a live agent session may own it".to_string()]);
             }
 
-            match guards::inspect_tree(path) {
+            match guards::inspect_tree_with(path, containment) {
                 Ok(safety) => {
                     finding = finding
                         .detail(describe_safety(&safety))
