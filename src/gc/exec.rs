@@ -59,11 +59,37 @@ pub fn run(
     cwd: Option<&Path>,
     timeout: Duration,
 ) -> Result<Output, ExecError> {
+    run_with_env(program, args, cwd, timeout, &[])
+}
+
+/// Environment applied to every git probe gc makes.
+///
+/// `GIT_NO_LAZY_FETCH=1` because the repo this tool was built for is a partial
+/// clone (`blob:none`, promisor remote). Any reference to an object it does not
+/// have — a worktree whose HEAD was created in some other clone, a blob a
+/// patch-id comparison needs — otherwise becomes a silent network fetch from
+/// the promisor remote. Measured at 14 to 18 seconds each, ending in
+/// `fatal: remote error: upload-pack: not our ref` when the remote does not
+/// have the object either. An audit of local state must never reach the
+/// network: a missing object is an answer gc can report, not one to go buy.
+const GIT_PROBE_ENV: [(&str, &str); 1] = [("GIT_NO_LAZY_FETCH", "1")];
+
+/// [`run`] with extra environment variables set on the child.
+pub fn run_with_env(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    timeout: Duration,
+    env: &[(&str, &str)],
+) -> Result<Output, ExecError> {
     let mut cmd = Command::new(program);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -120,7 +146,13 @@ pub fn run(
 /// Failure and timeout collapse into a single `Err(String)` because every gc
 /// caller treats "git could not answer" the same way: report it and move on.
 pub fn git(cwd: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
-    match run("git", args_with_c(cwd, args).as_slice(), None, timeout) {
+    match run_with_env(
+        "git",
+        args_with_c(cwd, args).as_slice(),
+        None,
+        timeout,
+        &GIT_PROBE_ENV,
+    ) {
         Ok(out) if out.success => Ok(out.stdout),
         Ok(out) => Err(format!(
             "git {} failed: {}",
@@ -137,7 +169,13 @@ pub fn git(cwd: &Path, args: &[&str], timeout: Duration) -> Result<String, Strin
 /// stdout-only read reports a clean repo no matter how much stale metadata is
 /// there. Any git command whose payload is diagnostics needs both streams.
 pub fn git_streams(cwd: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
-    match run("git", args_with_c(cwd, args).as_slice(), None, timeout) {
+    match run_with_env(
+        "git",
+        args_with_c(cwd, args).as_slice(),
+        None,
+        timeout,
+        &GIT_PROBE_ENV,
+    ) {
         Ok(out) if out.success => Ok(format!("{}{}", out.stdout, out.stderr)),
         Ok(out) => Err(format!(
             "git {} failed: {}",
@@ -216,6 +254,36 @@ mod tests {
         let out = run("cat", &[], None, Duration::from_secs(10)).unwrap();
         assert!(out.success, "cat with /dev/null stdin should exit cleanly");
         assert!(out.stdout.is_empty());
+    }
+
+    #[test]
+    fn extra_env_reaches_the_child() {
+        let out = run_with_env(
+            "sh",
+            &["-c", "printf %s \"$GROVE_TEST_VAR\""],
+            None,
+            Duration::from_secs(10),
+            &[("GROVE_TEST_VAR", "set")],
+        )
+        .unwrap();
+        assert_eq!(out.stdout, "set");
+    }
+
+    #[test]
+    fn git_probe_env_disables_lazy_fetching() {
+        // `git` and `git_streams` hardcode the program name, so the env they
+        // pass cannot be observed through a stand-in binary. What is worth
+        // pinning is the value itself: a probe that reaches the network is the
+        // failure this constant exists to prevent, and "0" or "" would not.
+        let echoed = run_with_env(
+            "sh",
+            &["-c", "printf %s \"$GIT_NO_LAZY_FETCH\""],
+            None,
+            Duration::from_secs(10),
+            &GIT_PROBE_ENV,
+        )
+        .unwrap();
+        assert_eq!(echoed.stdout, "1");
     }
 
     #[test]
