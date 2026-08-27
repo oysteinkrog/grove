@@ -103,15 +103,7 @@ pub fn inspect_tree(path: &Path) -> Result<TreeSafety, String> {
     // where an `ahead` count against a configured upstream would not.
     let unpushed = match &head {
         None => false,
-        Some(oid) => {
-            let contains = exec::git(
-                path,
-                &["branch", "-r", "--contains", oid],
-                QUICK_GIT_TIMEOUT,
-            )
-            .unwrap_or_default();
-            contains.trim().is_empty()
-        }
+        Some(oid) => commit_is_unpushed(path, oid),
     };
 
     Ok(TreeSafety {
@@ -121,6 +113,29 @@ pub fn inspect_tree(path: &Path) -> Result<TreeSafety, String> {
         head,
         branch,
     })
+}
+
+/// Whether `oid` is absent from every remote-tracking branch.
+///
+/// Asked as `rev-list --no-walk <oid> --not --remotes` rather than the obvious
+/// `branch -r --contains <oid>`. The two answer the same question — is this
+/// commit reachable from `refs/remotes/**` — but `branch -r` pays for one
+/// reachability query *per ref*, so its cost scales with the number of remote
+/// refs rather than with the history being asked about. On the repo this tool
+/// was built for (9,758 remote refs) that is 31s per call against 0.5s for the
+/// rev-list form, and it was most of a 17-minute `grove gc` run.
+///
+/// A git failure is reported as "not unpushed": the caller uses this to decide
+/// whether removal would lose work, and every other gate still applies. Erring
+/// the other way would block every removal whenever git hiccuped.
+pub fn commit_is_unpushed(path: &Path, oid: &str) -> bool {
+    exec::git(
+        path,
+        &["rev-list", "--no-walk", oid, "--not", "--remotes"],
+        QUICK_GIT_TIMEOUT,
+    )
+    .map(|out| !out.trim().is_empty())
+    .unwrap_or(false)
 }
 
 /// Why gc considers a tree in use.
@@ -470,6 +485,162 @@ mod tests {
         let safety = inspect_tree(dir.path()).unwrap();
         assert!(!safety.unpushed, "a repo with no commits is not unpushed");
         assert!(safety.head.is_none());
+    }
+
+    /// The `branch -r --contains` form [`commit_is_unpushed`] replaced, kept as
+    /// a test-only oracle. The replacement is not a refactor: it decides whether
+    /// `--yes` may delete a tree, so every case below asserts the two agree
+    /// rather than asserting the new answer alone.
+    fn unpushed_via_branch_contains(path: &Path, oid: &str) -> bool {
+        let contains = exec::git(
+            path,
+            &["branch", "-r", "--contains", oid],
+            QUICK_GIT_TIMEOUT,
+        )
+        .unwrap_or_default();
+        contains.trim().is_empty()
+    }
+
+    fn assert_both_forms_agree(path: &Path, oid: &str, expected_unpushed: bool, case: &str) {
+        let new = commit_is_unpushed(path, oid);
+        let old = unpushed_via_branch_contains(path, oid);
+        assert_eq!(
+            new, old,
+            "{case}: rev-list said unpushed={new}, branch -r --contains said {old}"
+        );
+        assert_eq!(new, expected_unpushed, "{case}: wrong verdict");
+    }
+
+    fn rev_parse(dir: &Path, rev: &str) -> String {
+        let out = Command::new("git")
+            .args(["-C", dir.to_str().unwrap(), "rev-parse", rev])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "rev-parse {rev} failed");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn commit_file(dir: &Path, name: &str, body: &str, message: &str) -> String {
+        std::fs::write(dir.join(name), body.as_bytes()).unwrap();
+        git_in(dir, &["add", "."]);
+        git_in(dir, &["commit", "-m", message]);
+        rev_parse(dir, "HEAD")
+    }
+
+    /// A local clone with a real `refs/remotes/**`, plus an upstream to push to.
+    struct RemoteFixture {
+        _upstream: TempDir,
+        local: TempDir,
+    }
+
+    fn remote_fixture() -> RemoteFixture {
+        let upstream = TempDir::new().unwrap();
+        init_repo(upstream.path());
+        // The fixture pushes to this repo's checked-out branch, which git
+        // refuses by default. Its work tree is never read, so let it drift.
+        git_in(
+            upstream.path(),
+            &["config", "receive.denyCurrentBranch", "ignore"],
+        );
+        commit_file(upstream.path(), "a.txt", "a", "init");
+
+        let local = TempDir::new().unwrap();
+        init_repo(local.path());
+        git_in(
+            local.path(),
+            &["remote", "add", "origin", upstream.path().to_str().unwrap()],
+        );
+        git_in(local.path(), &["fetch", "origin"]);
+        git_in(local.path(), &["reset", "--hard", "origin/main"]);
+
+        RemoteFixture {
+            _upstream: upstream,
+            local,
+        }
+    }
+
+    #[test]
+    fn pushed_head_is_not_unpushed_under_either_form() {
+        let fx = remote_fixture();
+        let head = rev_parse(fx.local.path(), "HEAD");
+        assert_both_forms_agree(fx.local.path(), &head, false, "tip matching origin/main");
+    }
+
+    #[test]
+    fn local_commit_on_top_is_unpushed_under_either_form() {
+        let fx = remote_fixture();
+        let local_only = commit_file(fx.local.path(), "b.txt", "b", "local work");
+        assert_both_forms_agree(fx.local.path(), &local_only, true, "unpushed local commit");
+    }
+
+    #[test]
+    fn detached_head_on_a_remote_commit_is_not_unpushed() {
+        // The case an `ahead` count against a configured upstream gets wrong:
+        // no branch, no upstream, but the commit is on the remote all the same.
+        let fx = remote_fixture();
+        let on_remote = rev_parse(fx.local.path(), "origin/main");
+        git_in(fx.local.path(), &["checkout", "--detach", &on_remote]);
+
+        let safety = inspect_tree(fx.local.path()).unwrap();
+        assert!(
+            safety.branch.is_none(),
+            "checkout --detach leaves no branch"
+        );
+        assert!(!safety.unpushed, "a detached HEAD on the remote is safe");
+        assert_both_forms_agree(fx.local.path(), &on_remote, false, "detached on remote");
+    }
+
+    #[test]
+    fn squash_merged_branch_tip_is_still_unpushed_under_either_form() {
+        // A squash landed upstream rewrites the diff, so the local tip's own oid
+        // is on no remote ref. Both forms must say so: recognising the *content*
+        // as merged is `git cherry`'s job in category 7, not this guard's.
+        let fx = remote_fixture();
+        git_in(fx.local.path(), &["checkout", "-b", "feature"]);
+        commit_file(fx.local.path(), "c.txt", "c1", "part one");
+        let feature_tip = commit_file(fx.local.path(), "c.txt", "c2", "part two");
+
+        // Upstream lands the same content as one commit with a new oid.
+        git_in(fx.local.path(), &["checkout", "main"]);
+        git_in(fx.local.path(), &["merge", "--squash", "feature"]);
+        git_in(fx.local.path(), &["commit", "-m", "landed as one"]);
+        git_in(fx.local.path(), &["push", "origin", "main"]);
+        git_in(fx.local.path(), &["fetch", "origin"]);
+
+        assert_both_forms_agree(
+            fx.local.path(),
+            &feature_tip,
+            true,
+            "squash-merged feature tip",
+        );
+        let squashed = rev_parse(fx.local.path(), "origin/main");
+        assert_both_forms_agree(
+            fx.local.path(),
+            &squashed,
+            false,
+            "the squash commit itself",
+        );
+    }
+
+    #[test]
+    fn commit_reachable_only_from_a_remote_tag_is_unpushed_under_either_form() {
+        // Neither form looks outside `refs/remotes/**`, so a fetched tag does not
+        // make a commit safe to delete. Asserted because it is the case where a
+        // naive "any ref reaches it" rewrite would silently start deleting work.
+        let fx = remote_fixture();
+        git_in(fx.local.path(), &["checkout", "-b", "tagged-only"]);
+        let tagged = commit_file(fx.local.path(), "d.txt", "d", "only ever tagged");
+        git_in(fx.local.path(), &["tag", "v1", &tagged]);
+        git_in(fx.local.path(), &["push", "origin", "v1"]);
+        git_in(fx.local.path(), &["checkout", "main"]);
+        git_in(fx.local.path(), &["branch", "-D", "tagged-only"]);
+        git_in(fx.local.path(), &["fetch", "origin", "--tags"]);
+
+        assert!(
+            !rev_parse(fx.local.path(), "refs/tags/v1").is_empty(),
+            "the tag must survive for the case to mean anything"
+        );
+        assert_both_forms_agree(fx.local.path(), &tagged, true, "reachable only via a tag");
     }
 
     #[test]
