@@ -13,6 +13,10 @@ pub struct Status {
     pub ahead: Option<u32>,
     /// Commits in upstream not in local branch; None when no upstream is configured.
     pub behind: Option<u32>,
+    /// Untracked entries, counting a wholly untracked directory as one entry
+    /// rather than recursing into it. This matches what plain `git status`
+    /// shows, and keeps `grove list` from walking large untracked trees such as
+    /// build output or a stray browser profile.
     pub untracked: u32,
     /// True when ahead == Some(0), meaning all local commits have been pushed.
     pub is_pushed: bool,
@@ -177,8 +181,7 @@ pub fn compute(wt: &Worktree) -> Result<Status> {
     let ts_repo = ThreadSafeRepository::open(&wt.path)?;
     let repo = ts_repo.to_thread_local();
 
-    let dirty = repo.is_dirty()?;
-    let untracked = count_untracked(&repo)?;
+    let (dirty, untracked) = scan_worktree(&repo)?;
     let (ahead, behind) = compute_ahead_behind(&repo, wt.branch())?;
 
     let is_pushed = ahead == Some(0);
@@ -191,21 +194,44 @@ pub fn compute(wt: &Worktree) -> Result<Status> {
     })
 }
 
-fn count_untracked(repo: &gix::Repository) -> Result<u32> {
+/// Walk the worktree once and answer both questions `grove list` needs: whether
+/// any tracked content changed, and how many untracked entries there are.
+///
+/// This replaces a `repo.is_dirty()` call followed by a separate untracked
+/// scan. Each of those walks the whole worktree, and on a large repo it is the
+/// walk itself, not the number of results, that costs. Measured on a 29k-file
+/// worktree, each walk took roughly 17 seconds, so doing it once rather than
+/// twice halves the work for every worktree `grove list` touches.
+fn scan_worktree(repo: &gix::Repository) -> Result<(bool, u32)> {
+    use gix::status::index_worktree::Item as IndexWorktreeItem;
+
     let platform = repo
         .status(gix::progress::Discard)?
-        .untracked_files(gix::status::UntrackedFiles::Files);
-    let mut count = 0u32;
+        .untracked_files(gix::status::UntrackedFiles::Collapsed);
+
+    let mut dirty = false;
+    let mut untracked = 0u32;
+
     for item in platform.into_iter(None)? {
-        if let gix::status::Item::IndexWorktree(
-            gix::status::index_worktree::Item::DirectoryContents { entry, .. },
-        ) = item?
-            && matches!(entry.status, gix::dir::entry::Status::Untracked)
-        {
-            count += 1;
+        match item? {
+            // Entries the directory walk turned up. Only untracked ones count;
+            // ignored entries are neither counted nor treated as changes.
+            gix::status::Item::IndexWorktree(IndexWorktreeItem::DirectoryContents {
+                entry,
+                ..
+            }) => {
+                if matches!(entry.status, gix::dir::entry::Status::Untracked) {
+                    untracked += 1;
+                }
+            }
+            // Any other index-vs-worktree item is a change to tracked content.
+            gix::status::Item::IndexWorktree(_) => dirty = true,
+            // The index differs from HEAD, meaning staged changes.
+            gix::status::Item::TreeIndex(_) => dirty = true,
         }
     }
-    Ok(count)
+
+    Ok((dirty, untracked))
 }
 
 fn compute_ahead_behind(
@@ -394,6 +420,59 @@ mod tests {
     }
 
     #[serial]
+    // A staged-but-uncommitted change must still read as dirty. The single
+    // worktree walk replaced an explicit repo.is_dirty() call, and this is the
+    // case that call used to cover on its own.
+    #[test]
+    fn staged_change_is_dirty() {
+        let dir = init_repo();
+        std::fs::write(dir.path().join("staged.txt"), b"new").unwrap();
+        git(dir.path(), &["add", "staged.txt"]);
+
+        let wt = open_worktree(dir.path());
+        let s = compute(&wt).expect("compute should succeed");
+
+        assert!(s.dirty, "staged change should make repo dirty");
+        assert_eq!(s.untracked, 0, "a staged file is tracked, not untracked");
+    }
+
+    #[serial]
+    // Untracked files alone must not flip `dirty`. The list view shows dirty and
+    // untracked as separate columns, so conflating them would misreport.
+    #[test]
+    fn untracked_only_is_not_dirty() {
+        let dir = init_repo();
+        std::fs::write(dir.path().join("loose.txt"), b"x").unwrap();
+
+        let wt = open_worktree(dir.path());
+        let s = compute(&wt).expect("compute should succeed");
+
+        assert!(!s.dirty, "untracked files alone should not make repo dirty");
+        assert_eq!(s.untracked, 1, "should count the untracked file");
+    }
+
+    #[serial]
+    // An untracked directory counts as one entry, not once per file inside it.
+    // This is what keeps `grove list` off large untracked trees.
+    #[test]
+    fn untracked_directory_counted_once() {
+        let dir = init_repo();
+        let nested = dir.path().join("junk").join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        for i in 0..25 {
+            std::fs::write(nested.join(format!("f{i}.txt")), b"x").unwrap();
+        }
+
+        let wt = open_worktree(dir.path());
+        let s = compute(&wt).expect("compute should succeed");
+
+        assert_eq!(
+            s.untracked, 1,
+            "untracked directory should collapse to a single entry"
+        );
+    }
+
+    #[serial]
     // compute_all: one invalid worktree path returns an error in its slot;
     // valid worktrees succeed and are not silently dropped.
     #[test]
@@ -436,3 +515,4 @@ mod tests {
         );
     }
 }
+
