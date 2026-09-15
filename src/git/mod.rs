@@ -1,6 +1,7 @@
 pub mod gix_backend;
 pub mod shell_backend;
 pub mod status;
+pub mod status_cache;
 
 use std::path::{Path, PathBuf};
 

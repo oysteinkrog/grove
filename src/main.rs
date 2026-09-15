@@ -143,12 +143,14 @@ fn dispatch(cli: Cli, config_dir: &std::path::Path) -> anyhow::Result<()> {
             short,
             json,
             no_status,
+            refresh,
         } => {
             let args = grove::cli::list::ListArgs {
                 repo: None, // global --repo already routed via discover()
                 short,
                 json,
                 no_status,
+                refresh,
             };
             grove::cli::list::run(&args, &cx)
         }

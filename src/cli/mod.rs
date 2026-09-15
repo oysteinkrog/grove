@@ -93,8 +93,12 @@ pub enum Command {
         short: bool,
         #[arg(long)]
         json: bool,
+        /// Skip git status scans entirely
         #[arg(long)]
         no_status: bool,
+        /// Ignore cached status and rescan every project
+        #[arg(long)]
+        refresh: bool,
     },
     /// Show git status for projects
     Status {

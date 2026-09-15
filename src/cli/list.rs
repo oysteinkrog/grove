@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use comfy_table::{Cell, CellAlignment, Color};
 use rayon::prelude::*;
@@ -10,6 +11,7 @@ use crate::git::{
     WorktreeManager,
     gix_backend::GixBackend,
     status::{Status, compute as compute_status},
+    status_cache::{self, Hit, LockOutcome, ScanLock, StatusCache},
 };
 use crate::registry::{Project, Registry};
 use crate::repo::RepoContext;
@@ -20,8 +22,10 @@ pub struct ListArgs {
     pub short: bool,
     /// Output as JSON
     pub json: bool,
-    /// Skip git status scans in JSON output (fast path)
+    /// Skip git status scans entirely (fast path)
     pub no_status: bool,
+    /// Ignore cached status and rescan every project
+    pub refresh: bool,
 }
 
 pub struct ProjectRow {
@@ -443,22 +447,164 @@ fn load_repo_rows(work_dir: &std::path::Path) -> Vec<ProjectRow> {
         .collect()
 }
 
-/// Compute git status for each project in parallel. Projects whose path no
-/// longer exists or whose `.git` is missing get `status: None`.
-fn scan_statuses(rows: &mut [ProjectRow]) {
-    let backend = GixBackend;
-    let statuses: Vec<Option<Status>> = rows
-        .par_iter()
-        .map(|row| {
-            if row.missing {
-                return None;
-            }
-            let wt = backend.open(&row.project.path).ok()?;
-            compute_status(&wt).ok()
-        })
+/// Upper bound on threads used for status scanning.
+///
+/// The work is filesystem-bound rather than CPU-bound, and several `grove
+/// list` processes commonly run at once. Rayon's global pool gives one thread
+/// per core, so four concurrent runs put about 130 threads on one Windows
+/// drive and slowed each other down. A smaller pool leaves the machine usable.
+///
+/// Half the cores is the balance point found by measurement: capping at 8 left
+/// a cold scan taking 764 seconds against 344 at 32 threads, for the same
+/// total work, which is too slow for a first run. Repeat runs come from the
+/// cache and do not pay this at all.
+const MAX_SCAN_THREADS: usize = 16;
+
+/// Where the status numbers came from, so the caller can say so.
+#[derive(Default)]
+struct ScanReport {
+    /// Projects whose status was computed now.
+    scanned: usize,
+    /// Projects whose status came from the cache.
+    cached: usize,
+    /// Age of the oldest cached entry used.
+    oldest: Option<Duration>,
+}
+
+impl ScanReport {
+    fn merge(&mut self, other: ScanReport) {
+        self.scanned += other.scanned;
+        self.cached += other.cached;
+        self.oldest = match (self.oldest, other.oldest) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
+    }
+}
+
+/// How old a cached entry may be and still be used.
+enum Freshness {
+    WithinTtl,
+    AnyAge,
+}
+
+/// Fill in `status` for each row, preferring cached results.
+///
+/// Projects whose path no longer exists, or whose scan fails, keep
+/// `status: None`.
+fn fill_statuses(grove_dir: &Path, rows: &mut [ProjectRow], refresh: bool) -> ScanReport {
+    let mut report = ScanReport::default();
+
+    let mut pending: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.missing)
+        .map(|(i, _)| i)
         .collect();
-    for (row, status) in rows.iter_mut().zip(statuses.into_iter()) {
-        row.status = status;
+
+    if !refresh {
+        pending = take_cached(grove_dir, rows, pending, Freshness::WithinTtl, &mut report);
+        if pending.is_empty() {
+            return report;
+        }
+    }
+
+    // Coordinate with any other grove already scanning this repo, so N
+    // concurrent runs cost one scan instead of N.
+    let lock = ScanLock::acquire(grove_dir);
+
+    if !refresh {
+        // Whoever held the lock may have produced exactly what we still need.
+        // If they are somehow *still* scanning, their stale numbers beat paying
+        // for a duplicate scan.
+        let freshness = if matches!(lock, LockOutcome::Contended) {
+            Freshness::AnyAge
+        } else {
+            Freshness::WithinTtl
+        };
+        pending = take_cached(grove_dir, rows, pending, freshness, &mut report);
+        if pending.is_empty() {
+            return report;
+        }
+    }
+
+    let mut fresh: Vec<(PathBuf, Status)> = Vec::new();
+    for (idx, status) in scan_uncached(rows, &pending) {
+        if let Some(s) = status {
+            fresh.push((rows[idx].project.path.clone(), s.clone()));
+            rows[idx].status = Some(s);
+        }
+    }
+
+    report.scanned = fresh.len();
+    // A cache that cannot be written is not worth failing the listing over.
+    let _ = StatusCache::store(grove_dir, &fresh);
+    drop(lock);
+
+    report
+}
+
+/// Take rows that have usable cached status, returning those still to scan.
+fn take_cached(
+    grove_dir: &Path,
+    rows: &mut [ProjectRow],
+    pending: Vec<usize>,
+    freshness: Freshness,
+    report: &mut ScanReport,
+) -> Vec<usize> {
+    let cache = StatusCache::load(grove_dir);
+    let mut still_pending = Vec::new();
+
+    for idx in pending {
+        let path = &rows[idx].project.path;
+        let hit = match freshness {
+            Freshness::WithinTtl => cache.get(path, status_cache::DEFAULT_TTL),
+            Freshness::AnyAge => cache.get_at_any_age(path),
+        };
+        match hit {
+            Hit::Fresh(status, age) => {
+                rows[idx].status = Some(status);
+                report.cached += 1;
+                report.oldest = Some(report.oldest.map_or(age, |o| o.max(age)));
+            }
+            Hit::Miss => still_pending.push(idx),
+        }
+    }
+
+    still_pending
+}
+
+/// Compute status for the listed rows on a bounded thread pool.
+fn scan_uncached(rows: &[ProjectRow], pending: &[usize]) -> Vec<(usize, Option<Status>)> {
+    let backend = GixBackend;
+    let run = || {
+        pending
+            .par_iter()
+            .map(|&idx| {
+                let Ok(wt) = backend.open(&rows[idx].project.path) else {
+                    return (idx, None);
+                };
+                (idx, compute_status(&wt).ok())
+            })
+            .collect()
+    };
+
+    let threads = pending.len().clamp(1, MAX_SCAN_THREADS);
+    match rayon::ThreadPoolBuilder::new().num_threads(threads).build() {
+        Ok(pool) => pool.install(run),
+        // A pool that will not build is no reason to skip the scan; fall back
+        // to whatever rayon's global pool offers.
+        Err(_) => run(),
+    }
+}
+
+/// Human-readable age, for the note about cached data.
+fn describe_age(age: Duration) -> String {
+    let secs = age.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m", secs / 60)
     }
 }
 
@@ -473,22 +619,27 @@ pub fn run(args: &ListArgs, cx: &RepoContext) -> anyhow::Result<()> {
     // Detect cwd-matched repo for ordering.
     let cwd_id = cwd_repo_id(cx);
 
-    // Decide whether to run status scans. JSON respects --no-status; table mode
-    // always scans (the whole point of `grove list` is to see status).
-    let want_status = !args.json || !args.no_status;
+    // `--no-status` applies to every output mode. It used to be honoured only
+    // alongside `--json`, which left no way to get a quick listing: a bare
+    // `grove list` always paid for a full scan of every project, even when the
+    // caller piped it straight into `head`.
+    let want_status = !args.no_status;
 
-    // Load rows in parallel across repos, then scan statuses in parallel within.
-    let mut sections: Vec<(String, Vec<ProjectRow>)> = all_ids
-        .par_iter()
-        .filter_map(|id| {
-            let entry = cx.global.repos.get(id)?;
-            let mut rows = load_repo_rows(&entry.work_dir);
-            if want_status {
-                scan_statuses(&mut rows);
-            }
-            Some((id.clone(), rows))
-        })
-        .collect();
+    // Repos are scanned one at a time; the parallelism that matters is within a
+    // repo, across its projects, and that pool is bounded in `scan_uncached`.
+    let mut report = ScanReport::default();
+    let mut sections: Vec<(String, Vec<ProjectRow>)> = Vec::new();
+    for id in &all_ids {
+        let Some(entry) = cx.global.repos.get(id) else {
+            continue;
+        };
+        let mut rows = load_repo_rows(&entry.work_dir);
+        if want_status {
+            let grove_dir = entry.work_dir.join(".grove");
+            report.merge(fill_statuses(&grove_dir, &mut rows, args.refresh));
+        }
+        sections.push((id.clone(), rows));
+    }
 
     // Sort: cwd-matched repo first, then alphabetical by id.
     sections.sort_by(|(a, _), (b, _)| {
@@ -541,6 +692,7 @@ pub fn run(args: &ListArgs, cx: &RepoContext) -> anyhow::Result<()> {
             let section = render_short_section(id, rows);
             print!("{section}");
         }
+        note_cached(&report);
         return Ok(());
     }
 
@@ -567,7 +719,31 @@ pub fn run(args: &ListArgs, cx: &RepoContext) -> anyhow::Result<()> {
         }
     }
 
+    note_cached(&report);
     Ok(())
+}
+
+/// Say when numbers came from the cache, and how to force a rescan.
+///
+/// Written to stderr so it cannot corrupt output that is being parsed, and so
+/// it stays out of the snapshot-tested section rendering.
+fn note_cached(report: &ScanReport) {
+    if report.cached == 0 {
+        return;
+    }
+    let age = report
+        .oldest
+        .map(|a| format!(" up to {} old", describe_age(a)))
+        .unwrap_or_default();
+    let scanned = if report.scanned > 0 {
+        format!(", {} rescanned", report.scanned)
+    } else {
+        String::new()
+    };
+    eprintln!(
+        "note: status for {} project(s) came from cache{age}{scanned}. Use --refresh to rescan.",
+        report.cached
+    );
 }
 
 #[cfg(test)]
