@@ -1,4 +1,6 @@
-use anyhow::Result;
+use std::process::Command;
+
+use anyhow::{Context, Result};
 use gix::ThreadSafeRepository;
 use gix::bstr::ByteSlice;
 use rayon::prelude::*;
@@ -177,61 +179,93 @@ pub fn compute_all(worktrees: &[Worktree]) -> Vec<Result<Status>> {
     worktrees.par_iter().map(compute).collect()
 }
 
+/// Status for one worktree, by asking git.
+///
+/// This used to walk the worktree with gix, which turned out to be the reason
+/// `grove list` was slow enough to saturate the machine. Measured on two
+/// worktrees of about 29k tracked files each, on a Windows drive under WSL1:
+/// gix needed 35 and 72 seconds, and git answered the same question in 6.1 and
+/// 3.6. Multiplied across a couple of hundred projects that is the difference
+/// between a command you can run and one you cannot.
+///
+/// One `git status --porcelain=v2 --branch` returns everything needed: whether
+/// tracked content changed, how many untracked entries there are, and how far
+/// the branch is from its upstream.
+///
+/// `--no-optional-locks` matters here. A plain `git status` writes back a
+/// refreshed index, and doing that across hundreds of worktrees while other
+/// work is in flight means both pointless writes and lock contention.
 pub fn compute(wt: &Worktree) -> Result<Status> {
-    let ts_repo = ThreadSafeRepository::open(&wt.path)?;
-    let repo = ts_repo.to_thread_local();
+    let out = Command::new("git")
+        .arg("--no-optional-locks")
+        .arg("-C")
+        .arg(&wt.path)
+        .args([
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=normal",
+        ])
+        .output()
+        .with_context(|| format!("could not run git status in {}", wt.path.display()))?;
 
-    let (dirty, untracked) = scan_worktree(&repo)?;
-    let (ahead, behind) = compute_ahead_behind(&repo, wt.branch())?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git status failed in {}: {}",
+            wt.path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
 
-    let is_pushed = ahead == Some(0);
-    Ok(Status {
+    Ok(parse_porcelain_v2(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Read `git status --porcelain=v2 --branch` output.
+///
+/// The format is stable and documented, and each line is self-describing:
+///
+/// - `# branch.ab +1 -2` gives commits ahead of and behind the upstream. The
+///   line is absent when there is no upstream, which is why ahead and behind
+///   are optional rather than zero.
+/// - `1`, `2` and `u` lines are changed, renamed and unmerged tracked entries.
+///   Any of them means tracked content changed.
+/// - `?` lines are untracked. With `--untracked-files=normal` a wholly
+///   untracked directory is one line rather than one line per file inside it,
+///   which is what plain `git status` shows.
+///
+/// Unknown lines are ignored, so a future git that adds a line type reports
+/// slightly less rather than failing.
+fn parse_porcelain_v2(text: &str) -> Status {
+    let mut dirty = false;
+    let mut untracked = 0u32;
+    let mut ahead = None;
+    let mut behind = None;
+
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("# branch.ab ") {
+            let mut parts = rest.split_whitespace();
+            ahead = parts
+                .next()
+                .and_then(|p| p.strip_prefix('+'))
+                .and_then(|n| n.parse().ok());
+            behind = parts
+                .next()
+                .and_then(|p| p.strip_prefix('-'))
+                .and_then(|n| n.parse().ok());
+        } else if line.starts_with("? ") {
+            untracked += 1;
+        } else if line.starts_with("1 ") || line.starts_with("2 ") || line.starts_with("u ") {
+            dirty = true;
+        }
+    }
+
+    Status {
         dirty,
         ahead,
         behind,
         untracked,
-        is_pushed,
-    })
-}
-
-/// Walk the worktree once and answer both questions `grove list` needs: whether
-/// any tracked content changed, and how many untracked entries there are.
-///
-/// This replaces a `repo.is_dirty()` call followed by a separate untracked
-/// scan. Each of those walks the whole worktree, and on a large repo it is the
-/// walk itself, not the number of results, that costs. Measured on a 29k-file
-/// worktree, each walk took roughly 17 seconds, so doing it once rather than
-/// twice halves the work for every worktree `grove list` touches.
-fn scan_worktree(repo: &gix::Repository) -> Result<(bool, u32)> {
-    use gix::status::index_worktree::Item as IndexWorktreeItem;
-
-    let platform = repo
-        .status(gix::progress::Discard)?
-        .untracked_files(gix::status::UntrackedFiles::Collapsed);
-
-    let mut dirty = false;
-    let mut untracked = 0u32;
-
-    for item in platform.into_iter(None)? {
-        match item? {
-            // Entries the directory walk turned up. Only untracked ones count;
-            // ignored entries are neither counted nor treated as changes.
-            gix::status::Item::IndexWorktree(IndexWorktreeItem::DirectoryContents {
-                entry,
-                ..
-            }) => {
-                if matches!(entry.status, gix::dir::entry::Status::Untracked) {
-                    untracked += 1;
-                }
-            }
-            // Any other index-vs-worktree item is a change to tracked content.
-            gix::status::Item::IndexWorktree(_) => dirty = true,
-            // The index differs from HEAD, meaning staged changes.
-            gix::status::Item::TreeIndex(_) => dirty = true,
-        }
+        is_pushed: ahead == Some(0),
     }
-
-    Ok((dirty, untracked))
 }
 
 fn compute_ahead_behind(
@@ -417,6 +451,93 @@ mod tests {
         let s = compute(&wt).expect("compute should succeed");
 
         assert_eq!(s.untracked, 2, "should count 2 untracked files");
+    }
+
+    // ── porcelain v2 parsing ────────────────────────────────────────────────
+    //
+    // These drive the parser directly. They are cheap, and they pin down the
+    // cases that are awkward to set up as real repos: no upstream, detached
+    // HEAD, unmerged entries.
+
+    #[test]
+    fn parses_ahead_behind() {
+        let s = parse_porcelain_v2(
+            "# branch.oid abc123\n\
+             # branch.head feature\n\
+             # branch.upstream origin/feature\n\
+             # branch.ab +3 -5\n",
+        );
+        assert_eq!(s.ahead, Some(3));
+        assert_eq!(s.behind, Some(5));
+        assert!(!s.is_pushed, "3 commits ahead is not pushed");
+        assert!(!s.dirty);
+        assert_eq!(s.untracked, 0);
+    }
+
+    #[test]
+    fn no_upstream_line_means_unknown_not_zero() {
+        // A branch with no upstream gets no `# branch.ab` line at all. Reporting
+        // zero here would claim it is in sync with something that is not there.
+        let s = parse_porcelain_v2("# branch.oid abc123\n# branch.head solo\n");
+        assert_eq!(s.ahead, None);
+        assert_eq!(s.behind, None);
+        assert!(!s.is_pushed);
+    }
+
+    #[test]
+    fn in_sync_branch_is_pushed() {
+        let s = parse_porcelain_v2("# branch.ab +0 -0\n");
+        assert_eq!(s.ahead, Some(0));
+        assert!(s.is_pushed);
+    }
+
+    #[test]
+    fn counts_untracked_lines_only() {
+        let s = parse_porcelain_v2(
+            "# branch.ab +0 -0\n\
+             ? one.txt\n\
+             ? junk/\n\
+             ? two.txt\n",
+        );
+        assert_eq!(s.untracked, 3);
+        assert!(!s.dirty, "untracked entries alone are not a tracked change");
+    }
+
+    #[test]
+    fn changed_renamed_and_unmerged_entries_are_dirty() {
+        for line in [
+            "1 .M N... 100644 100644 100644 abc abc file.txt",
+            "2 R. N... 100644 100644 100644 abc abc R100 new.txt\told.txt",
+            "u UU N... 100644 100644 100644 100644 abc abc abc both.txt",
+        ] {
+            let s = parse_porcelain_v2(&format!("# branch.ab +0 -0\n{line}\n"));
+            assert!(s.dirty, "should be dirty for line: {line}");
+        }
+    }
+
+    #[test]
+    fn clean_output_is_clean() {
+        let s = parse_porcelain_v2("# branch.oid abc\n# branch.head main\n# branch.ab +0 -0\n");
+        assert!(!s.dirty);
+        assert_eq!(s.untracked, 0);
+    }
+
+    #[test]
+    fn unknown_lines_are_ignored() {
+        // A future git adding a line type should cost us information, not
+        // correctness.
+        let s = parse_porcelain_v2("# branch.ab +1 -0\nX something new\n! ignored.txt\n");
+        assert_eq!(s.ahead, Some(1));
+        assert!(!s.dirty);
+        assert_eq!(s.untracked, 0);
+    }
+
+    #[test]
+    fn empty_output_is_clean_and_unknown() {
+        let s = parse_porcelain_v2("");
+        assert!(!s.dirty);
+        assert_eq!(s.untracked, 0);
+        assert_eq!(s.ahead, None);
     }
 
     #[serial]
