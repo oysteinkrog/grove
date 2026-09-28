@@ -43,7 +43,7 @@ pub trait Terminal: Send + Sync {
 ///   1. Explicit override wins unconditionally.
 ///   2. WEZTERM_PANE env var → Wezterm.
 ///   3. WT_SESSION env var → WindowsTerminal.
-///   4. wezterm.exe on PATH → Wezterm.
+///   4. wezterm.exe on PATH (or wezterm, on Linux) → Wezterm.
 ///   5. wt.exe on PATH → WindowsTerminal.
 ///   6. Error: NoTerminalAvailable.
 pub fn autodetect(override_kind: Option<TerminalKind>) -> Result<TerminalKind, LaunchError> {
@@ -60,6 +60,11 @@ pub fn autodetect(override_kind: Option<TerminalKind>) -> Result<TerminalKind, L
     }
 
     if which::which("wezterm.exe").is_ok() {
+        return Ok(TerminalKind::Wezterm);
+    }
+
+    #[cfg(target_os = "linux")]
+    if which::which("wezterm").is_ok() {
         return Ok(TerminalKind::Wezterm);
     }
 
@@ -153,7 +158,11 @@ mod tests {
         // On Linux CI neither wt.exe nor wezterm.exe will be on PATH, so this
         // test exercises the NoTerminalAvailable path on all platforms.
         // On Windows dev machines where wt.exe exists this test is skipped.
-        if which::which("wt.exe").is_err() && which::which("wezterm.exe").is_err() {
+        let native_wezterm = cfg!(target_os = "linux") && which::which("wezterm").is_ok();
+        if which::which("wt.exe").is_err()
+            && which::which("wezterm.exe").is_err()
+            && !native_wezterm
+        {
             assert!(matches!(
                 autodetect(None),
                 Err(LaunchError::NoTerminalAvailable)

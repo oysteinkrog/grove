@@ -61,12 +61,23 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
         backend.fetch(&cx.resolved.main_repo, &cx.resolved.upstream_remote)?;
     }
 
-    backend.worktree_add(
+    // Clone the source worktree itself, so the fork also starts with its
+    // build output.
+    let reflinked = backend.worktree_add_reflinked(
         &cx.resolved.main_repo,
+        &source_project.path,
         &target,
         &new_branch,
         Some(&source_branch),
     )?;
+    if !reflinked {
+        backend.worktree_add(
+            &cx.resolved.main_repo,
+            &target,
+            &new_branch,
+            Some(&source_branch),
+        )?;
+    }
 
     let project = Project {
         path: target.clone(),
@@ -96,6 +107,12 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
     }
     println!("  Branch:        {new_branch}");
     println!("  Path:          {}", target.display());
+    if reflinked {
+        println!(
+            "  Copy:          reflink of {}",
+            source_project.path.display()
+        );
+    }
     if let Some(expires_at) = expires_at {
         println!(
             "  Expires:       {} (ephemeral)",

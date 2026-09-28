@@ -62,7 +62,16 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
         backend.fetch(&cx.resolved.main_repo, &cx.resolved.upstream_remote)?;
     }
 
-    backend.worktree_add(&cx.resolved.main_repo, &target, &branch, Some(&base_ref))?;
+    let reflinked = backend.worktree_add_reflinked(
+        &cx.resolved.main_repo,
+        &cx.resolved.main_repo,
+        &target,
+        &branch,
+        Some(&base_ref),
+    )?;
+    if !reflinked {
+        backend.worktree_add(&cx.resolved.main_repo, &target, &branch, Some(&base_ref))?;
+    }
 
     let project = Project {
         path: target.clone(),
@@ -92,6 +101,9 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     println!("  Branch: {branch}");
     println!("  Base:   {base_ref}");
     println!("  Path:   {}", target.display());
+    if reflinked {
+        println!("  Copy:   reflink of {}", cx.resolved.main_repo.display());
+    }
     if let Some(expires_at) = expires_at {
         println!(
             "  Expires: {} (ephemeral)",

@@ -27,6 +27,12 @@ impl Wezterm {
         }
     }
 
+    fn is_windows_exe(&self) -> bool {
+        self.wezterm_exe
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("exe"))
+    }
+
     /// Build argv for a single `wezterm cli spawn` invocation.
     ///
     /// Each tab gets its own argv slice; the caller is responsible for spawning
@@ -34,13 +40,19 @@ impl Wezterm {
     pub fn build_argv(&self, tabs: &[&LaunchOptions]) -> Vec<Vec<String>> {
         tabs.iter()
             .map(|tab| {
-                let win_cwd = to_windows_path(&tab.cwd);
+                // Only the Windows wezterm.exe (driven from WSL) needs a Windows
+                // path. A native Linux wezterm takes the path as it is.
+                let cwd = if self.is_windows_exe() {
+                    to_windows_path(&tab.cwd)
+                } else {
+                    tab.cwd.to_string_lossy().into_owned()
+                };
                 let mut argv = vec![
                     self.wezterm_exe.to_string_lossy().into_owned(),
                     "cli".to_owned(),
                     "spawn".to_owned(),
                     "--cwd".to_owned(),
-                    win_cwd,
+                    cwd,
                 ];
                 if let Some(cmd) = &tab.command {
                     argv.push("--".to_owned());
@@ -128,6 +140,15 @@ mod tests {
             assert_eq!(argv[1], "cli");
             assert_eq!(argv[2], "spawn");
         }
+    }
+
+    #[test]
+    fn native_wezterm_keeps_linux_path() {
+        let tabs = vec![make_tab("/home/oystein/work/grove", None)];
+        let argvs = Wezterm::with_path("/usr/bin/wezterm").dry_run_tabs(&tabs);
+        let argv = &argvs[0];
+        let cwd_idx = argv.iter().position(|a| a == "--cwd").unwrap() + 1;
+        assert_eq!(argv[cwd_idx], "/home/oystein/work/grove");
     }
 
     #[test]
