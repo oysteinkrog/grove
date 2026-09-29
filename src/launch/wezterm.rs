@@ -5,12 +5,29 @@ use crate::paths::to_windows_path;
 
 use super::{LaunchError, LaunchOptions, Terminal, TerminalKind};
 
-/// Wezterm launcher that issues one `wezterm cli spawn` per tab.
+const FRANKENTERM_EXE: &str = "frankenterm-gui";
+
+/// Launcher that issues one `<exe> cli spawn` per tab.
+///
+/// Covers both wezterm and Frankenterm: `frankenterm-gui cli spawn` takes the
+/// same arguments as `wezterm cli spawn`, and the stock wezterm CLI cannot
+/// talk to a Frankenterm mux.
 ///
 /// Unlike wt.exe, the wezterm CLI has no multi-tab single-invocation syntax,
 /// so each tab requires a separate subprocess call.
 pub struct Wezterm {
     wezterm_exe: PathBuf,
+    kind: TerminalKind,
+}
+
+/// Locate `frankenterm-gui` on PATH or in `~/.local/bin`.
+pub fn find_frankenterm() -> Option<PathBuf> {
+    if let Ok(path) = which::which(FRANKENTERM_EXE) {
+        return Some(path);
+    }
+    let home = std::env::var_os("HOME")?;
+    let path = Path::new(&home).join(".local/bin").join(FRANKENTERM_EXE);
+    path.is_file().then_some(path)
 }
 
 impl Wezterm {
@@ -18,12 +35,29 @@ impl Wezterm {
         let exe = which::which("wezterm")
             .or_else(|_| which::which("wezterm.exe"))
             .map_err(|_| LaunchError::SpawnFailed("wezterm not found on PATH".to_owned()))?;
-        Ok(Self { wezterm_exe: exe })
+        Ok(Self::with_path(exe))
+    }
+
+    pub fn frankenterm() -> Result<Self, LaunchError> {
+        let exe = find_frankenterm().ok_or_else(|| {
+            LaunchError::SpawnFailed(format!(
+                "{FRANKENTERM_EXE} not found on PATH or in ~/.local/bin"
+            ))
+        })?;
+        Ok(Self::frankenterm_with_path(exe))
     }
 
     pub fn with_path(path: impl Into<PathBuf>) -> Self {
         Self {
             wezterm_exe: path.into(),
+            kind: TerminalKind::Wezterm,
+        }
+    }
+
+    pub fn frankenterm_with_path(path: impl Into<PathBuf>) -> Self {
+        Self {
+            wezterm_exe: path.into(),
+            kind: TerminalKind::Frankenterm,
         }
     }
 
@@ -56,6 +90,13 @@ impl Wezterm {
                 ];
                 if let Some(cmd) = &tab.command {
                     argv.push("--".to_owned());
+                    // `cli spawn` execs its argv directly, so a native spawn
+                    // needs a shell to split the command line. wezterm.exe
+                    // keeps the single-element form it has always used.
+                    if !self.is_windows_exe() {
+                        argv.push("sh".to_owned());
+                        argv.push("-c".to_owned());
+                    }
                     argv.push(cmd.clone());
                 }
                 argv
@@ -104,7 +145,7 @@ impl Terminal for Wezterm {
     }
 
     fn kind(&self) -> TerminalKind {
-        TerminalKind::Wezterm
+        self.kind.clone()
     }
 }
 
@@ -169,6 +210,49 @@ mod tests {
         let tabs = vec![make_tab("/c/work/foo", None)];
         let argvs = wz.dry_run_tabs(&tabs);
         assert_eq!(argvs[0][0], "/custom/path/wezterm");
+    }
+
+    #[test]
+    fn native_spawn_wraps_command_in_sh_c() {
+        let tabs = vec![make_tab(
+            "/home/oystein/work/a",
+            Some("fish -l -c 'claude'"),
+        )];
+        let argvs = Wezterm::with_path("/usr/bin/wezterm").dry_run_tabs(&tabs);
+        let argv = &argvs[0];
+        let sep = argv.iter().position(|a| a == "--").unwrap();
+        assert_eq!(&argv[sep + 1..], ["sh", "-c", "fish -l -c 'claude'"]);
+    }
+
+    #[test]
+    fn windows_exe_keeps_single_command_element() {
+        let tabs = vec![make_tab("/c/work/a", Some("fish -l"))];
+        let argvs = wz().dry_run_tabs(&tabs);
+        let argv = &argvs[0];
+        let sep = argv.iter().position(|a| a == "--").unwrap();
+        assert_eq!(&argv[sep + 1..], ["fish -l"]);
+    }
+
+    #[test]
+    fn frankenterm_uses_cli_spawn_with_native_path_and_shell() {
+        let ft = Wezterm::frankenterm_with_path("/home/o/.local/bin/frankenterm-gui");
+        assert_eq!(ft.kind(), TerminalKind::Frankenterm);
+        let tabs = vec![make_tab("/home/o/work/desktop/foo", Some("fish -l"))];
+        let argvs = ft.dry_run_tabs(&tabs);
+        assert_eq!(
+            argvs[0],
+            [
+                "/home/o/.local/bin/frankenterm-gui",
+                "cli",
+                "spawn",
+                "--cwd",
+                "/home/o/work/desktop/foo",
+                "--",
+                "sh",
+                "-c",
+                "fish -l",
+            ]
+        );
     }
 
     #[test]

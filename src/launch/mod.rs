@@ -11,6 +11,7 @@ pub mod mock_terminal;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalKind {
     Wezterm,
+    Frankenterm,
     WindowsTerminal,
 }
 
@@ -24,7 +25,7 @@ pub struct LaunchOptions {
 #[derive(Debug, Error)]
 pub enum LaunchError {
     #[error(
-        "no terminal available; set launch.terminal in config or ensure wt.exe/wezterm.exe is on PATH"
+        "no terminal available; set launch.terminal in config or ensure wt.exe, wezterm.exe or frankenterm-gui is on PATH"
     )]
     NoTerminalAvailable,
     #[error("terminal launch failed: {0}")]
@@ -41,14 +42,21 @@ pub trait Terminal: Send + Sync {
 ///
 /// Priority order (mirrors docs/04-launch-test-ci.md §2.5):
 ///   1. Explicit override wins unconditionally.
-///   2. WEZTERM_PANE env var → Wezterm.
-///   3. WT_SESSION env var → WindowsTerminal.
-///   4. wezterm.exe on PATH (or wezterm, on Linux) → Wezterm.
-///   5. wt.exe on PATH → WindowsTerminal.
-///   6. Error: NoTerminalAvailable.
+///   2. FRANKENTERM_UNIX_SOCKET env var (set in Frankenterm panes) → Frankenterm.
+///   3. WEZTERM_PANE env var → Wezterm.
+///   4. WT_SESSION env var → WindowsTerminal.
+///   5. On Linux, frankenterm-gui on PATH or in ~/.local/bin → Frankenterm.
+///   6. wezterm.exe on PATH (or wezterm, on Linux) → Wezterm.
+///   7. wt.exe on PATH → WindowsTerminal.
+///   8. Error: NoTerminalAvailable.
 pub fn autodetect(override_kind: Option<TerminalKind>) -> Result<TerminalKind, LaunchError> {
     if let Some(kind) = override_kind {
         return Ok(kind);
+    }
+
+    // Frankenterm panes also set WEZTERM_PANE, so check this first.
+    if std::env::var_os("FRANKENTERM_UNIX_SOCKET").is_some_and(|v| !v.is_empty()) {
+        return Ok(TerminalKind::Frankenterm);
     }
 
     if std::env::var("WEZTERM_PANE").is_ok() {
@@ -57,6 +65,11 @@ pub fn autodetect(override_kind: Option<TerminalKind>) -> Result<TerminalKind, L
 
     if std::env::var("WT_SESSION").is_ok() {
         return Ok(TerminalKind::WindowsTerminal);
+    }
+
+    #[cfg(target_os = "linux")]
+    if wezterm::find_frankenterm().is_some() {
+        return Ok(TerminalKind::Frankenterm);
     }
 
     if which::which("wezterm.exe").is_ok() {
@@ -119,6 +132,7 @@ mod tests {
     #[serial]
     fn wezterm_pane_env_wins() {
         let _lock = ENV_MUTEX.lock().unwrap();
+        let _ft = EnvGuard::remove("FRANKENTERM_UNIX_SOCKET");
         let _wt = EnvGuard::remove("WT_SESSION");
         let _wp = EnvGuard::set("WEZTERM_PANE", "1");
         assert_eq!(autodetect(None).unwrap(), TerminalKind::Wezterm);
@@ -128,9 +142,29 @@ mod tests {
     #[serial]
     fn wt_session_env_wins() {
         let _lock = ENV_MUTEX.lock().unwrap();
+        let _ft = EnvGuard::remove("FRANKENTERM_UNIX_SOCKET");
         let _wp = EnvGuard::remove("WEZTERM_PANE");
         let _wt = EnvGuard::set("WT_SESSION", "some-session-id");
         assert_eq!(autodetect(None).unwrap(), TerminalKind::WindowsTerminal);
+    }
+
+    #[test]
+    #[serial]
+    fn frankenterm_socket_env_beats_wezterm_pane() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let _ft = EnvGuard::set("FRANKENTERM_UNIX_SOCKET", "/run/user/1000/frankenterm/sock");
+        let _wp = EnvGuard::set("WEZTERM_PANE", "1");
+        assert_eq!(autodetect(None).unwrap(), TerminalKind::Frankenterm);
+    }
+
+    #[test]
+    #[serial]
+    fn empty_frankenterm_socket_env_is_ignored() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let _ft = EnvGuard::set("FRANKENTERM_UNIX_SOCKET", "");
+        let _wt = EnvGuard::remove("WT_SESSION");
+        let _wp = EnvGuard::set("WEZTERM_PANE", "1");
+        assert_eq!(autodetect(None).unwrap(), TerminalKind::Wezterm);
     }
 
     #[test]
@@ -153,12 +187,14 @@ mod tests {
     #[serial]
     fn no_terminal_available_returns_error() {
         let _lock = ENV_MUTEX.lock().unwrap();
+        let _ft = EnvGuard::remove("FRANKENTERM_UNIX_SOCKET");
         let _wp = EnvGuard::remove("WEZTERM_PANE");
         let _wt = EnvGuard::remove("WT_SESSION");
         // On Linux CI neither wt.exe nor wezterm.exe will be on PATH, so this
         // test exercises the NoTerminalAvailable path on all platforms.
         // On Windows dev machines where wt.exe exists this test is skipped.
-        let native_wezterm = cfg!(target_os = "linux") && which::which("wezterm").is_ok();
+        let native_wezterm = cfg!(target_os = "linux")
+            && (which::which("wezterm").is_ok() || wezterm::find_frankenterm().is_some());
         if which::which("wt.exe").is_err()
             && which::which("wezterm.exe").is_err()
             && !native_wezterm

@@ -19,7 +19,7 @@ pub struct LaunchArgs {
     pub dry_run: bool,
     /// Skip claude invocation; use bare fish login shell
     pub no_claude: bool,
-    /// Override terminal kind: "wt" or "wezterm"
+    /// Override terminal kind: "wt", "wezterm" or "frankenterm"
     pub terminal: Option<String>,
 }
 
@@ -101,6 +101,14 @@ pub fn run_with_terminal_factory(
                     let argv = wt.dry_run_tabs(&tabs);
                     println!("{}", argv.join(" "));
                 }
+                Ok(TerminalKind::Frankenterm) => {
+                    let ft = Wezterm::frankenterm()
+                        .unwrap_or_else(|_| Wezterm::frankenterm_with_path("frankenterm-gui"));
+                    for tab in &tabs {
+                        let line = ft.dry_run(tab)?;
+                        println!("{line}");
+                    }
+                }
                 Ok(TerminalKind::Wezterm) | Err(_) => {
                     let wz = Wezterm::default();
                     for tab in &tabs {
@@ -136,6 +144,12 @@ pub fn run_with_terminal_factory(
             wz.launch_tabs(&tabs)
                 .map_err(|e| anyhow::anyhow!("terminal launch failed: {e}"))?;
         }
+        TerminalKind::Frankenterm => {
+            let ft = Wezterm::frankenterm()
+                .map_err(|e| anyhow::anyhow!("frankenterm not found: {e}"))?;
+            ft.launch_tabs(&tabs)
+                .map_err(|e| anyhow::anyhow!("terminal launch failed: {e}"))?;
+        }
     }
 
     Ok(())
@@ -157,6 +171,7 @@ fn resolve_terminal_kind(
         .and_then(|s| match s {
             "wt" | "windows_terminal" => Some(TerminalKind::WindowsTerminal),
             "wezterm" => Some(TerminalKind::Wezterm),
+            "frankenterm" | "ft" => Some(TerminalKind::Frankenterm),
             _ => None,
         });
 
@@ -372,5 +387,22 @@ mod tests {
             0,
             "dry_run should not call launch(), so recorded_tabs must be empty"
         );
+    }
+
+    #[test]
+    fn terminal_arg_accepts_frankenterm() {
+        let cx = make_context(BTreeMap::new());
+        for name in ["frankenterm", "ft"] {
+            let args = LaunchArgs {
+                only: None,
+                dry_run: true,
+                no_claude: false,
+                terminal: Some(name.to_string()),
+            };
+            assert_eq!(
+                resolve_terminal_kind(&args, &cx).unwrap(),
+                TerminalKind::Frankenterm
+            );
+        }
     }
 }
