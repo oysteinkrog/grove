@@ -59,6 +59,11 @@ pub fn run(args: &GcArgs, cx: &RepoContext) -> anyhow::Result<()> {
         print!("{}", report::render_category(plan, category));
         let _ = std::io::stdout().flush();
     });
+    let events = crate::events::log_path()
+        .map(|p| crate::events::read_all(&p))
+        .unwrap_or_default();
+    let finished = finished_work(&plan, cx, &events, &super::who::SessionIndex::load());
+    print!("{}", render_finished(&finished));
     print!("{}", report::render_warnings(&plan));
     println!("{}", report::summary(&plan, mode));
     let _ = std::io::stdout().flush();
@@ -74,6 +79,79 @@ pub fn run(args: &GcArgs, cx: &RepoContext) -> anyhow::Result<()> {
     };
     outcome.print();
     Ok(())
+}
+
+/// A registered project whose work is merged and whose owner session is gone.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Finished {
+    pub tag: String,
+    pub path: PathBuf,
+    pub owner: String,
+}
+
+/// Merged-and-clean projects (category 7) whose owner session no longer
+/// exists, neither running nor kept for resume. Projects with no recorded
+/// owner are left out: "unknown" is not "gone".
+pub fn finished_work(
+    plan: &GcPlan,
+    cx: &RepoContext,
+    events: &[crate::events::Event],
+    sessions: &super::who::SessionIndex,
+) -> Vec<Finished> {
+    plan.in_category(Category::MergedProject)
+        .filter_map(|f| {
+            let project = cx.registry.projects.get(&f.label)?;
+            let row = super::who::make_row(
+                Some(&f.label),
+                &project.path,
+                project.owner.as_ref(),
+                events,
+            );
+            if sessions.status(row.owner.as_ref()) != super::who::Status::Gone {
+                return None;
+            }
+            let o = row.owner.as_ref()?;
+            let owner = o
+                .session_name
+                .clone()
+                .or_else(|| o.session_id.clone())
+                .unwrap_or_default();
+            Some(Finished {
+                tag: f.label.clone(),
+                path: project.path.clone(),
+                owner,
+            })
+        })
+        .collect()
+}
+
+/// The "finished" section: report only, it names the commands and runs none.
+pub fn render_finished(finished: &[Finished]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "Finished: owner session gone and work merged ({})",
+        finished.len()
+    );
+    let _ = writeln!(
+        out,
+        "    {}",
+        crate::display::dim("report only, nothing is removed; run these yourself")
+    );
+    if finished.is_empty() {
+        let _ = writeln!(out, "    {}", crate::display::dim("nothing found"));
+    }
+    for f in finished {
+        let _ = writeln!(out, "    grove done {}", f.tag);
+        let _ = writeln!(
+            out,
+            "      {}",
+            crate::display::dim(format!("{} (owner: {})", f.path.display(), f.owner))
+        );
+    }
+    let _ = writeln!(out);
+    out
 }
 
 #[derive(Default)]
@@ -255,6 +333,88 @@ mod tests {
 
     fn finding(category: Category, remedy: Remedy) -> Finding {
         Finding::new(category, "wt-a", "/c/work/desktop/wt-a").remedy(remedy)
+    }
+
+    fn context_with(projects: Vec<(&str, Option<&str>)>) -> RepoContext {
+        use crate::config::ResolvedConfig;
+        use crate::config::global::ReposManifest;
+        use crate::registry::Project;
+        let mut registry = Registry::default();
+        for (tag, sid) in projects {
+            registry
+                .insert(
+                    tag.to_string(),
+                    Project {
+                        path: PathBuf::from(format!("/w/{tag}")),
+                        branch: tag.to_string(),
+                        base: "origin/main".to_string(),
+                        created: time::OffsetDateTime::UNIX_EPOCH,
+                        issue: None,
+                        frozen: false,
+                        expires_at: None,
+                        owner: sid.map(|s| crate::events::Owner {
+                            session_id: Some(s.to_string()),
+                            session_name: Some(format!("name-{s}")),
+                            ..Default::default()
+                        }),
+                    },
+                )
+                .unwrap();
+        }
+        RepoContext {
+            id: "test".to_string(),
+            global: ReposManifest {
+                schema_version: 1,
+                default_repo: None,
+                repos: Default::default(),
+            },
+            resolved: ResolvedConfig {
+                main_repo: PathBuf::from("/w/main"),
+                work_dir: PathBuf::from("/w"),
+                upstream_remote: "origin".to_string(),
+                fork_remote: "origin".to_string(),
+                default_base: "main".to_string(),
+                issue_prefix: None,
+                dir_prefix: String::new(),
+                launch: None,
+            },
+            registry,
+        }
+    }
+
+    #[test]
+    fn finished_lists_only_merged_projects_whose_owner_is_gone() {
+        let cx = context_with(vec![
+            ("gone", Some("s-gone")),
+            ("alive", Some("s-alive")),
+            ("parked", Some("s-parked")),
+            ("nobody", None),
+            ("unmerged", Some("s-gone")),
+        ]);
+        let mut plan = GcPlan::default();
+        for tag in ["gone", "alive", "parked", "nobody"] {
+            plan.findings.push(Finding::new(
+                Category::MergedProject,
+                tag,
+                format!("/w/{tag}"),
+            ));
+        }
+        let sessions = crate::cli::who::SessionIndex {
+            live: ["s-alive".to_string()].into(),
+            persisted: ["s-parked".to_string()].into(),
+        };
+        let finished = finished_work(&plan, &cx, &[], &sessions);
+        assert_eq!(
+            finished,
+            vec![Finished {
+                tag: "gone".to_string(),
+                path: PathBuf::from("/w/gone"),
+                owner: "name-s-gone".to_string(),
+            }]
+        );
+        let text = render_finished(&finished);
+        assert!(text.contains("grove done gone"));
+        assert!(text.contains("nothing is removed"));
     }
 
     #[test]
