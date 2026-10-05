@@ -287,6 +287,14 @@ pub(crate) fn reflink_enabled() -> bool {
     }
 }
 
+fn git_lfs_available() -> bool {
+    Command::new("git")
+        .args(["lfs", "version"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Try one real reflink from `source` into `dir`. This catches every reason a
 /// reflink can fail (filesystem, crossing filesystems, `cp` without
 /// `--reflink`) before anything is created.
@@ -314,6 +322,63 @@ fn reflink_probe(source: &Path, dir: &Path) -> bool {
 }
 
 impl ShellBackend {
+    /// Run `git lfs dedup` in a fresh worktree, so its LFS files share blocks
+    /// with the LFS object store instead of being full copies. Returns
+    /// `Ok(false)` when git-lfs is not installed.
+    ///
+    /// Some repos commit raw LFS pointer files outside any `filter=lfs` path.
+    /// `git lfs dedup` replaces those with real content too, so they show as
+    /// modified. Every path whose status changed is restored from the index,
+    /// and the status must then match what it was before.
+    pub fn lfs_dedup(&self, worktree: &Path) -> Result<bool, GroveError> {
+        if !git_lfs_available() {
+            return Ok(false);
+        }
+        // Not `run_stdout`: its trim would eat the leading space of " M path".
+        let status = |_: &Self| -> Result<String, GroveError> {
+            let out = Command::new(&self.git_path)
+                .arg("-C")
+                .arg(worktree)
+                .args(["status", "--porcelain", "-z"])
+                .output()
+                .map_err(|e| GroveError::GitCommandFailed {
+                    cmd: "git status".to_string(),
+                    stderr: e.to_string(),
+                })?;
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        };
+        let before = status(self)?;
+        self.run(worktree, &["lfs", "dedup"])?;
+        let after = status(self)?;
+        if after == before {
+            return Ok(true);
+        }
+        let old: std::collections::HashSet<&str> = before.split('\0').collect();
+        for entry in after.split('\0').filter(|e| !old.contains(e)) {
+            if let Some(path) = entry.get(3..).filter(|p| !p.is_empty()) {
+                self.run(
+                    worktree,
+                    &["--literal-pathspecs", "checkout", "-q", "--", path],
+                )?;
+            }
+        }
+        let _ = self.run(worktree, &["update-index", "-q", "--refresh"]);
+        if status(self)? != before {
+            return Err(GroveError::GitCommandFailed {
+                cmd: format!("git -C {} lfs dedup", worktree.display()),
+                stderr: "git status changed and could not be restored".to_string(),
+            });
+        }
+        Ok(true)
+    }
+
+    /// [`Self::lfs_dedup`], printing a warning instead of failing.
+    pub fn lfs_dedup_or_warn(&self, worktree: &Path) {
+        if let Err(e) = self.lfs_dedup(worktree) {
+            eprintln!("warning: git lfs dedup in {}: {e}", worktree.display());
+        }
+    }
+
     pub fn fetch(&self, repo_path: &Path, remote: &str) -> Result<(), GroveError> {
         self.run(repo_path, &["fetch", remote])
     }
@@ -638,6 +703,56 @@ mod tests {
     }
 
     // ── reflink worktrees ─────────────────────────────────────────────────────
+
+    #[test]
+    fn lfs_dedup_keeps_raw_pointer_files_unchanged() {
+        if !git_lfs_available() {
+            eprintln!("skipping: git-lfs not installed");
+            return;
+        }
+        let Some(scratch) = reflink_scratch() else {
+            eprintln!("skipping: no reflink support under target/");
+            return;
+        };
+        let main = scratch.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["config", "user.email", "t@example.com"]);
+        git(&main, &["config", "user.name", "t"]);
+        git(&main, &["lfs", "install", "--local"]);
+        git(&main, &["lfs", "track", "*.bin"]);
+        let content = "x".repeat(10_000);
+        std::fs::write(main.join("big.bin"), &content).unwrap();
+        git(&main, &["add", "."]);
+        git(&main, &["commit", "-q", "-m", "lfs"]);
+        // A raw pointer to the same object, committed without the LFS filter.
+        let pointer = git(&main, &["lfs", "pointer", "--file=big.bin"]) + "\n";
+        std::fs::write(main.join("raw.dat"), &pointer).unwrap();
+        git(&main, &["add", "raw.dat"]);
+        git(&main, &["commit", "-q", "-m", "raw pointer"]);
+
+        let wt = scratch.path().join("wt");
+        let backend = ShellBackend::new();
+        backend
+            .worktree_add(&main, &wt, "lane", Some("main"))
+            .unwrap();
+        match backend.lfs_dedup(&wt) {
+            Ok(ran) => assert!(ran),
+            Err(e) => {
+                eprintln!("skipping: git lfs dedup not supported here: {e}");
+                return;
+            }
+        }
+        assert_eq!(git(&wt, &["status", "--porcelain"]), "");
+        assert_eq!(
+            std::fs::read_to_string(wt.join("raw.dat")).unwrap(),
+            pointer
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join("big.bin")).unwrap(),
+            content
+        );
+    }
 
     #[test]
     fn empty_gitmodules_is_not_submodules() {

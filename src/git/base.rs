@@ -103,6 +103,9 @@ impl ShellBackend {
                 let _ = self.run(repo_path, &["worktree", "remove", "--force", base_str]);
                 return Err(e.to_string());
             }
+            // LFS files are full copies after a checkout; share their blocks
+            // with the LFS store.
+            self.lfs_dedup_or_warn(base);
         }
 
         let dirty = self

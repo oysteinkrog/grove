@@ -91,6 +91,7 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     }
     if !reflinked {
         backend.worktree_add(&cx.resolved.main_repo, &target, &branch, Some(&base_ref))?;
+        backend.lfs_dedup_or_warn(&target);
     }
 
     let project = Project {

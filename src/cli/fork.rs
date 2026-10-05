@@ -77,6 +77,7 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
             &new_branch,
             Some(&source_branch),
         )?;
+        backend.lfs_dedup_or_warn(&target);
     }
 
     let project = Project {
