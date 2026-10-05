@@ -214,7 +214,8 @@ pub fn all_rows(cx: &RepoContext, events: &[Event]) -> Vec<Row> {
     .unwrap_or_default();
     for wt in listed {
         let known = rows.iter().any(|r| same_path(&r.path, &wt.path))
-            || same_path(&wt.path, &cx.resolved.main_repo);
+            || same_path(&wt.path, &cx.resolved.main_repo)
+            || crate::git::base::is_base_path(&cx.resolved.work_dir, &wt.path);
         if !known {
             rows.push(make_row(None, &wt.path, None, events));
         }

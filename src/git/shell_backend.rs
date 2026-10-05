@@ -21,7 +21,7 @@ impl ShellBackend {
         Self { git_path }
     }
 
-    fn run(&self, repo_path: &Path, args: &[&str]) -> Result<(), GroveError> {
+    pub(crate) fn run(&self, repo_path: &Path, args: &[&str]) -> Result<(), GroveError> {
         let cmd_str = format!(
             "{} -C {} {}",
             self.git_path.display(),
@@ -60,7 +60,7 @@ impl Default for ShellBackend {
 pub const REFLINK_ENV: &str = "GROVE_REFLINK";
 
 impl ShellBackend {
-    fn run_stdout(&self, repo_path: &Path, args: &[&str]) -> Result<String, GroveError> {
+    pub(crate) fn run_stdout(&self, repo_path: &Path, args: &[&str]) -> Result<String, GroveError> {
         let cmd_str = format!(
             "{} -C {} {}",
             self.git_path.display(),
@@ -115,6 +115,20 @@ impl ShellBackend {
         branch: &str,
         base: Option<&str>,
     ) -> Result<bool, GroveError> {
+        self.worktree_add_reflinked_locked(repo_path, source, target, branch, base, None)
+    }
+
+    /// Same as [`Self::worktree_add_reflinked`], holding `source_lock` until
+    /// the files and index of `source` are copied, then releasing it.
+    pub fn worktree_add_reflinked_locked(
+        &self,
+        repo_path: &Path,
+        source: &Path,
+        target: &Path,
+        branch: &str,
+        base: Option<&str>,
+        source_lock: Option<std::fs::File>,
+    ) -> Result<bool, GroveError> {
         if !reflink_enabled() || !source.join(".git").exists() || has_submodules(source) {
             return Ok(false);
         }
@@ -149,7 +163,7 @@ impl ShellBackend {
             )?,
         }
 
-        if let Err(e) = self.fill_from_source(source, target) {
+        if let Err(e) = self.fill_from_source(source, target, source_lock) {
             // Leave nothing half-built behind. The branch stays, as it would
             // after any failed `grove new`, and the error says so.
             let _ = self.run(repo_path, &["worktree", "remove", "--force", target_str]);
@@ -163,7 +177,12 @@ impl ShellBackend {
         Ok(true)
     }
 
-    fn fill_from_source(&self, source: &Path, target: &Path) -> Result<(), GroveError> {
+    fn fill_from_source(
+        &self,
+        source: &Path,
+        target: &Path,
+        source_lock: Option<std::fs::File>,
+    ) -> Result<(), GroveError> {
         let io_err = |what: String, e: std::io::Error| GroveError::GitCommandFailed {
             cmd: what,
             stderr: e.to_string(),
@@ -218,6 +237,9 @@ impl ShellBackend {
             }
         }
 
+        // Everything needed from `source` is copied; let others use it.
+        drop(source_lock);
+
         // The copied index still holds the inode and ctime of the source files,
         // so `reset --hard` would treat every file as changed and write it out
         // again, which breaks the sharing. A refresh first reads each file once,
@@ -234,7 +256,7 @@ impl ShellBackend {
 /// True when `source` declares at least one submodule. A `.gitmodules` file
 /// with no `submodule.*` entries (left behind after the last submodule was
 /// removed) does not count. When the file cannot be read, assume submodules.
-fn has_submodules(source: &Path) -> bool {
+pub(crate) fn has_submodules(source: &Path) -> bool {
     let gitmodules = source.join(".gitmodules");
     if !gitmodules.exists() {
         return false;
@@ -252,7 +274,7 @@ fn has_submodules(source: &Path) -> bool {
     }
 }
 
-fn reflink_enabled() -> bool {
+pub(crate) fn reflink_enabled() -> bool {
     if !cfg!(target_os = "linux") {
         return false;
     }

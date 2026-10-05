@@ -62,13 +62,33 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
         backend.fetch(&cx.resolved.main_repo, &cx.resolved.upstream_remote)?;
     }
 
-    let reflinked = backend.worktree_add_reflinked(
+    // Copy from the clean base checkout, never from the main checkout, which
+    // may be far behind and carries ignored files.
+    let default_ref = compute_base_ref(
+        None,
+        &cx.resolved.upstream_remote,
+        &cx.resolved.default_base,
+    );
+    let target_dir = target.parent().unwrap_or(&cx.resolved.work_dir);
+    let mut copied_from = None;
+    let mut reflinked = false;
+    if let Some(prepared) = backend.prepare_base(
         &cx.resolved.main_repo,
-        &cx.resolved.main_repo,
-        &target,
-        &branch,
-        Some(&base_ref),
-    )?;
+        &cx.resolved.work_dir,
+        target_dir,
+        &default_ref,
+    ) {
+        let base_dir = prepared.path.clone();
+        reflinked = backend.worktree_add_reflinked_locked(
+            &cx.resolved.main_repo,
+            &base_dir,
+            &target,
+            &branch,
+            Some(&base_ref),
+            Some(prepared.lock),
+        )?;
+        copied_from = Some(base_dir);
+    }
     if !reflinked {
         backend.worktree_add(&cx.resolved.main_repo, &target, &branch, Some(&base_ref))?;
     }
@@ -106,8 +126,8 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     println!("  Branch: {branch}");
     println!("  Base:   {base_ref}");
     println!("  Path:   {}", target.display());
-    if reflinked {
-        println!("  Copy:   reflink of {}", cx.resolved.main_repo.display());
+    if let (true, Some(source)) = (reflinked, &copied_from) {
+        println!("  Copy:   reflink of {}", source.display());
     }
     if let Some(expires_at) = expires_at {
         println!(

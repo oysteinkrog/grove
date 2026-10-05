@@ -322,6 +322,10 @@ pub fn classify_worktree_path(
     if path.starts_with(layout.harness_dir()) {
         return Some(Category::HarnessWorktree);
     }
+    // The base checkout is grove's own, not a project.
+    if crate::git::base::is_base_path(&layout.work_dir, path) {
+        return None;
+    }
     if path.starts_with(layout.scratch_dir()) {
         return Some(Category::ExpiredEphemeral);
     }
@@ -460,6 +464,14 @@ mod tests {
     #[test]
     fn main_repo_and_outsiders_are_unclassified() {
         let registered = BTreeSet::new();
+        assert_eq!(
+            classify_worktree_path(
+                Path::new("/c/work/desktop/.grove/base"),
+                &layout(),
+                &registered
+            ),
+            None
+        );
         assert_eq!(
             classify_worktree_path(Path::new("/c/work/desktop/master"), &layout(), &registered),
             None
