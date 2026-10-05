@@ -89,6 +89,9 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
         expires_at,
     };
 
+    let mut event = crate::events::Event::for_project("fork", &cx.id, &new_tag, &project);
+    event.ttl = args.ttl.clone();
+
     let mut registry = cx.registry.clone();
     registry
         .insert(new_tag.clone(), project)
@@ -96,6 +99,7 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
     registry
         .save(&cx.grove_dir())
         .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
+    crate::events::record(&event);
 
     println!("Forked '{}' \u{2192} '{}'", source_tag, new_tag);
     println!("  Source branch: {source_branch}");

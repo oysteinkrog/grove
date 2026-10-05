@@ -60,6 +60,8 @@ pub fn run(args: &AdoptArgs, cx: &RepoContext) -> Result<()> {
         expires_at: None,
     };
 
+    let event = crate::events::Event::for_project("adopt", &cx.id, &args.tag, &project);
+
     let mut registry = cx.registry.clone();
     registry
         .insert(args.tag.clone(), project)
@@ -67,6 +69,7 @@ pub fn run(args: &AdoptArgs, cx: &RepoContext) -> Result<()> {
     registry
         .save(&cx.grove_dir())
         .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
+    crate::events::record(&event);
 
     println!("Adopted project '{}'", args.tag);
     println!("  Path: {}", final_path.display());

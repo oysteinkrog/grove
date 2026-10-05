@@ -38,10 +38,11 @@ fn resolve_tag(args: &DoneArgs, cx: &RepoContext) -> Result<String> {
         }
     }
 
-    best.map(|(_, tag)| tag).ok_or_else(|| GroveError::RepoDiscovery {
-        hint: "cwd is not inside any known worktree; pass a tag explicitly: grove done <tag>"
-            .to_string(),
-    })
+    best.map(|(_, tag)| tag)
+        .ok_or_else(|| GroveError::RepoDiscovery {
+            hint: "cwd is not inside any known worktree; pass a tag explicitly: grove done <tag>"
+                .to_string(),
+        })
 }
 
 pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
@@ -55,6 +56,7 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
 
     let worktree_path = project.path.clone();
     let branch = project.branch.clone();
+    let event = crate::events::Event::for_project("done", &cx.id, &tag, project);
 
     let backend = ShellBackend::new();
 
@@ -107,6 +109,7 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
     registry
         .save(&cx.grove_dir())
         .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
+    crate::events::record(&event);
 
     println!("Removed project '{tag}'.");
     Ok(())

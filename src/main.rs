@@ -26,6 +26,7 @@ fn main() -> ExitCode {
     }
 
     let cli = Cli::parse();
+    grove::events::enable();
 
     let use_ansi = std::io::stderr().is_terminal();
     tracing_subscriber::fmt()

@@ -93,6 +93,11 @@ fn remove_tree(
 
     remove_worktree_dir(layout, path)?;
 
+    let mut event = crate::events::Event::now("gc-remove", path);
+    event.tag = tag.map(str::to_string);
+    event.branch = branch.map(str::to_string);
+    crate::events::record(&event);
+
     let mut message = format!("removed {}", path.display());
 
     if let Some(branch) = branch {

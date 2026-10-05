@@ -83,6 +83,9 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
         expires_at,
     };
 
+    let mut event = crate::events::Event::for_project("new", &cx.id, &args.tag, &project);
+    event.ttl = args.ttl.clone();
+
     let mut registry = cx.registry.clone();
     registry
         .insert(args.tag.clone(), project)
@@ -90,6 +93,7 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     registry
         .save(&cx.grove_dir())
         .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
+    crate::events::record(&event);
 
     println!("Created project '{}'", args.tag);
     if let Some(issue) = args.issue {

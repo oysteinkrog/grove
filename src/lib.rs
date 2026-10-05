@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config;
 pub mod display;
 pub mod error;
+pub mod events;
 pub mod gc;
 pub mod git;
 pub mod launch;
