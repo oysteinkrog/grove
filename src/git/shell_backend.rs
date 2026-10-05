@@ -115,10 +115,7 @@ impl ShellBackend {
         branch: &str,
         base: Option<&str>,
     ) -> Result<bool, GroveError> {
-        if !reflink_enabled()
-            || !source.join(".git").exists()
-            || source.join(".gitmodules").exists()
-        {
+        if !reflink_enabled() || !source.join(".git").exists() || has_submodules(source) {
             return Ok(false);
         }
         let Some(parent) = target.parent() else {
@@ -231,6 +228,27 @@ impl ShellBackend {
         self.run(target, &["reset", "--hard", "-q", "HEAD"])?;
         self.run(target, &["clean", "-fdq"])?;
         Ok(())
+    }
+}
+
+/// True when `source` declares at least one submodule. A `.gitmodules` file
+/// with no `submodule.*` entries (left behind after the last submodule was
+/// removed) does not count. When the file cannot be read, assume submodules.
+fn has_submodules(source: &Path) -> bool {
+    let gitmodules = source.join(".gitmodules");
+    if !gitmodules.exists() {
+        return false;
+    }
+    let output = Command::new("git")
+        .arg("config")
+        .arg("-f")
+        .arg(&gitmodules)
+        .args(["--get-regexp", r"^submodule\."])
+        .output();
+    match output {
+        // `git config --get-regexp` exits 1 when nothing matches.
+        Ok(o) => o.status.success() || o.status.code() != Some(1),
+        Err(_) => true,
     }
 }
 
@@ -598,6 +616,20 @@ mod tests {
     }
 
     // ── reflink worktrees ─────────────────────────────────────────────────────
+
+    #[test]
+    fn empty_gitmodules_is_not_submodules() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!has_submodules(dir.path()));
+        std::fs::write(dir.path().join(".gitmodules"), "").unwrap();
+        assert!(!has_submodules(dir.path()));
+        std::fs::write(
+            dir.path().join(".gitmodules"),
+            "[submodule \"lib\"]\n\tpath = lib\n\turl = https://example.com/lib.git\n",
+        )
+        .unwrap();
+        assert!(has_submodules(dir.path()));
+    }
 
     fn git(dir: &Path, args: &[&str]) -> String {
         let out = Command::new("git")
