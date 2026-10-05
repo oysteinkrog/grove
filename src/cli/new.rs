@@ -81,6 +81,7 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
         issue: args.issue,
         frozen: false,
         expires_at,
+        owner: crate::events::Owner::detect_non_empty(),
     };
 
     let mut event = crate::events::Event::for_project("new", &cx.id, &args.tag, &project);

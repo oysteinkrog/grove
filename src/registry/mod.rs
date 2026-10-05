@@ -125,6 +125,7 @@ mod tests {
             issue: None,
             frozen: false,
             expires_at: None,
+            owner: None,
         }
     }
 
@@ -152,6 +153,7 @@ mod tests {
             issue: Some(123),
             frozen: true,
             expires_at: None,
+            owner: None,
         };
 
         let mut registry = Registry::default();
@@ -169,6 +171,32 @@ mod tests {
             loaded_proj.created.unix_timestamp(),
             created.unix_timestamp()
         );
+    }
+
+    #[test]
+    fn owner_round_trips_and_is_optional() {
+        let dir = TempDir::new().unwrap();
+        let grove_dir = dir.path().join(".grove");
+        let mut with_owner = make_project("/c/work/r/a");
+        with_owner.owner = Some(crate::events::Owner {
+            session_id: Some("sid".to_string()),
+            proc_start: Some("99".to_string()),
+            ..Default::default()
+        });
+        let mut registry = Registry::default();
+        registry.insert("a".to_string(), with_owner).unwrap();
+        registry
+            .insert("b".to_string(), make_project("/c/work/r/b"))
+            .unwrap();
+        registry.save(&grove_dir).unwrap();
+
+        let raw = fs::read_to_string(grove_dir.join("registry.json")).unwrap();
+        assert_eq!(raw.matches("\"owner\"").count(), 1, "None is not written");
+
+        let loaded = Registry::load(&grove_dir).unwrap();
+        let owner = loaded.projects["a"].owner.as_ref().unwrap();
+        assert_eq!(owner.session_id.as_deref(), Some("sid"));
+        assert!(loaded.projects["b"].owner.is_none());
     }
 
     #[test]

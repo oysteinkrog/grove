@@ -90,6 +90,11 @@ impl Owner {
         owner
     }
 
+    /// [`Owner::detect`], or `None` when there is no session to record.
+    pub fn detect_non_empty() -> Option<Self> {
+        Some(Self::detect()).filter(|o| !o.is_empty())
+    }
+
     pub fn is_empty(&self) -> bool {
         self.session_id.is_none() && self.claude_pid.is_none()
     }

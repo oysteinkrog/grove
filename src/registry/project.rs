@@ -19,6 +19,10 @@ pub struct Project {
     /// field is what marks a project as ephemeral — there is no separate flag.
     #[serde(default, with = "time::serde::rfc3339::option")]
     pub expires_at: Option<OffsetDateTime>,
+    /// The Claude Code session that created the project, when grove could
+    /// tell. Older registries have no such field, hence the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<crate::events::Owner>,
 }
 
 impl Project {
@@ -49,6 +53,7 @@ mod tests {
             issue: None,
             frozen: false,
             expires_at,
+            owner: None,
         }
     }
 

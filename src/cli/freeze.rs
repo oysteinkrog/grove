@@ -98,6 +98,7 @@ mod tests {
             issue: None,
             frozen: false,
             expires_at: None,
+            owner: None,
         }
     }
 
@@ -219,6 +220,7 @@ mod tests {
             issue: None,
             frozen: false,
             expires_at: None,
+            owner: None,
         };
         projects.insert("myfeature".to_string(), p);
 

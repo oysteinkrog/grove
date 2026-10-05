@@ -772,6 +772,7 @@ mod tests {
             issue,
             frozen,
             expires_at: None,
+            owner: None,
         }
     }
 
@@ -892,6 +893,7 @@ mod tests {
             issue: None,
             frozen: false,
             expires_at: Some(expires_at),
+            owner: None,
         }
     }
 
@@ -1105,6 +1107,7 @@ mod tests {
             issue: None,
             frozen: false,
             expires_at: None,
+            owner: None,
         }
     }
 

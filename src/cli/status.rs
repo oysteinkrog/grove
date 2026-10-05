@@ -206,6 +206,7 @@ mod tests {
                 issue: None,
                 frozen: false,
                 expires_at: None,
+                owner: None,
             },
         );
         let mut repos = BTreeMap::new();
@@ -296,6 +297,7 @@ mod tests {
             issue: None,
             frozen: false,
             expires_at: None,
+            owner: None,
         };
 
         // We render to stdout; capture by redirecting through a buffer isn't trivial,

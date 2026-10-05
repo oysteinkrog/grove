@@ -169,6 +169,7 @@ fn make_context_with_project(
                 issue: None,
                 frozen: false,
                 expires_at: None,
+                owner: None,
             },
         )
         .unwrap();
@@ -329,6 +330,7 @@ fn rename_duplicate_tag_returns_error() {
                 issue: None,
                 frozen: false,
                 expires_at: None,
+                owner: None,
             },
         )
         .unwrap();
@@ -343,6 +345,7 @@ fn rename_duplicate_tag_returns_error() {
                 issue: None,
                 frozen: false,
                 expires_at: None,
+                owner: None,
             },
         )
         .unwrap();

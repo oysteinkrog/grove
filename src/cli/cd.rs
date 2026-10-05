@@ -46,6 +46,7 @@ mod tests {
             issue: None,
             frozen: false,
             expires_at: None,
+            owner: None,
         }
     }
 

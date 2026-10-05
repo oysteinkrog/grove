@@ -35,6 +35,7 @@ fn make_project(path: &str, branch: &str, base: &str, issue: Option<u32>, frozen
         issue,
         frozen,
         expires_at: None,
+        owner: None,
     }
 }
 

@@ -58,6 +58,7 @@ pub fn run(args: &AdoptArgs, cx: &RepoContext) -> Result<()> {
         issue: args.issue,
         frozen: false,
         expires_at: None,
+        owner: crate::events::Owner::detect_non_empty(),
     };
 
     let event = crate::events::Event::for_project("adopt", &cx.id, &args.tag, &project);

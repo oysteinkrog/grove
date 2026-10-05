@@ -87,6 +87,7 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
         issue: args.issue,
         frozen: false,
         expires_at,
+        owner: crate::events::Owner::detect_non_empty(),
     };
 
     let mut event = crate::events::Event::for_project("fork", &cx.id, &new_tag, &project);

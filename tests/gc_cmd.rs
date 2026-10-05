@@ -192,6 +192,7 @@ fn project(path: &Path, branch: &str, expires_at: Option<OffsetDateTime>) -> Pro
         issue: None,
         frozen: false,
         expires_at,
+        owner: None,
     }
 }
 

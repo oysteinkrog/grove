@@ -151,6 +151,7 @@ impl GitFixture {
             issue: None,
             frozen: false,
             expires_at: None,
+            owner: None,
         }
     }
 }

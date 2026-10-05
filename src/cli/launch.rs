@@ -186,6 +186,7 @@ mod tests {
             issue: None,
             frozen,
             expires_at: None,
+            owner: None,
         }
     }
 

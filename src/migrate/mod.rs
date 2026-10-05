@@ -266,6 +266,7 @@ pub fn run_if_needed(config_dir: &Path) -> Result<MigrationOutcome, MigrationErr
                 issue: lp.issue,
                 frozen: lp.frozen,
                 expires_at: None,
+                owner: None,
             };
             // Ignore duplicate errors — registry shouldn't have duplicates but be safe.
             let _ = new_registry.insert(tag, project);
