@@ -94,12 +94,7 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
     let mut event = crate::events::Event::for_project("fork", &cx.id, &new_tag, &project);
     event.ttl = args.ttl.clone();
 
-    let mut registry = cx.registry.clone();
-    registry
-        .insert(new_tag.clone(), project)
-        .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
-    registry
-        .save(&cx.grove_dir())
+    crate::registry::Registry::insert_on_disk(&cx.grove_dir(), new_tag.clone(), project)
         .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
     crate::events::record(&event);
 

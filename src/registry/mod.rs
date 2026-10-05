@@ -84,6 +84,23 @@ impl Registry {
         Ok(())
     }
 
+    /// Add one project to the registry file. Holds `registry.lock` and reads
+    /// the file again first, so two `grove new` runs at once do not drop each
+    /// other's entry. Returns the registry as saved.
+    pub fn insert_on_disk(
+        grove_dir: &Path,
+        tag: String,
+        project: Project,
+    ) -> Result<Self, RegistryError> {
+        fs::create_dir_all(grove_dir)?;
+        let lock = fs::File::create(grove_dir.join("registry.lock"))?;
+        lock.lock()?;
+        let mut registry = Self::load(grove_dir)?;
+        registry.insert(tag, project)?;
+        registry.save(grove_dir)?;
+        Ok(registry)
+    }
+
     pub fn remove(&mut self, tag: &str) -> Result<Project, RegistryError> {
         self.projects
             .remove(tag)
@@ -127,6 +144,29 @@ mod tests {
             expires_at: None,
             owner: None,
         }
+    }
+
+    #[test]
+    fn concurrent_insert_on_disk_keeps_every_entry() {
+        let dir = TempDir::new().unwrap();
+        let grove_dir = dir.path().to_path_buf();
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let grove_dir = grove_dir.clone();
+                std::thread::spawn(move || {
+                    Registry::insert_on_disk(
+                        &grove_dir,
+                        format!("t{i}"),
+                        make_project(&format!("/w/t{i}")),
+                    )
+                    .unwrap();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(Registry::load(&grove_dir).unwrap().projects.len(), 8);
     }
 
     #[test]
