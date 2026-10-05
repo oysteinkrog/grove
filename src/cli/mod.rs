@@ -12,6 +12,7 @@ pub mod path;
 pub mod rename;
 pub mod repo;
 pub mod status;
+pub mod who;
 
 use clap::Parser;
 use clap_complete::Shell;
@@ -164,6 +165,11 @@ pub enum Command {
         /// Apply the bookkeeping categories (1, 4, 5, 6) without asking.
         #[arg(long)]
         yes: bool,
+    },
+    /// Show which Claude Code session owns a worktree and whether it is alive
+    Who {
+        /// A project tag or a worktree path. Omit to list every worktree.
+        target: Option<String>,
     },
     /// Generate shell completion scripts
     #[command(hide = true, name = "__completions")]

@@ -238,6 +238,8 @@ fn dispatch(cli: Cli, config_dir: &std::path::Path) -> anyhow::Result<()> {
             grove::cli::gc::run(&args, &cx)
         }
 
+        Command::Who { target } => grove::cli::who::run(&grove::cli::who::WhoArgs { target }, &cx),
+
         Command::Repo { cmd } => run_repo(&cx, cmd, config_dir),
     }
 }
