@@ -416,11 +416,13 @@ mod tests {
     #[test]
     fn row_prefers_registry_owner_then_last_non_removal_event() {
         let path = PathBuf::from("/w/t");
-        let mut created = Event::default();
-        created.op = "add".to_string();
-        created.source = Some("hook".to_string());
-        created.path = path.clone();
-        created.owner = owner("creator");
+        let created = Event {
+            op: "add".to_string(),
+            source: Some("hook".to_string()),
+            path: path.clone(),
+            owner: owner("creator"),
+            ..Event::default()
+        };
         let mut removed = created.clone();
         removed.op = "remove".to_string();
         removed.owner = owner("remover");
