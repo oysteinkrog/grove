@@ -473,6 +473,14 @@ mod tests {
             None
         );
         assert_eq!(
+            classify_worktree_path(
+                Path::new("/c/work/desktop/.grove/base-stable-26.1"),
+                &layout(),
+                &registered
+            ),
+            None
+        );
+        assert_eq!(
             classify_worktree_path(Path::new("/c/work/desktop/master"), &layout(), &registered),
             None
         );

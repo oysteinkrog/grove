@@ -177,7 +177,7 @@ impl ShellBackend {
         Ok(true)
     }
 
-    fn fill_from_source(
+    pub(super) fn fill_from_source(
         &self,
         source: &Path,
         target: &Path,
