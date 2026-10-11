@@ -324,7 +324,10 @@ mod tests {
         StatusCache::store(dir.path(), &[(PathBuf::from("/a"), status(1))]).unwrap();
 
         let cache = StatusCache::load(dir.path());
-        assert!(matches!(cache.get(Path::new("/b"), DEFAULT_TTL), Hit::Miss));
+        assert!(matches!(
+            cache.get(Path::new("/b"), DEFAULT_TTL),
+            Hit::Miss
+        ));
     }
 
     /// Write a cache file whose single entry is `age_secs` old, to exercise
@@ -342,7 +345,11 @@ mod tests {
         entries.insert(project.to_string(), entry);
         let cache = StatusCache { entries };
         std::fs::create_dir_all(grove_dir).unwrap();
-        std::fs::write(cache_path(grove_dir), serde_json::to_vec(&cache).unwrap()).unwrap();
+        std::fs::write(
+            cache_path(grove_dir),
+            serde_json::to_vec(&cache).unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
