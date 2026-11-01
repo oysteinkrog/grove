@@ -50,6 +50,15 @@ bead.
 - **Never modify another bead's files outside your reservation.** If you find
   a bug in someone else's code, surface it via agent-mail and file a new bead.
 
+## Critical safeguards
+
+- No `cargo run` against the user's real `~/.config/grove/` until Phase 1
+  validation gate (`grove-ktk.6`) passes. Run only against tempdir fixtures.
+- The legacy Python `~/bin/grove` is **still in production use**. Do not
+  remove it. Cutover happens in `grove-1bt.4`.
+- Never push to `main` on `oysteinkrog/grove` without running `cargo test`
+  locally first. CI is the safety net, not the first check.
+
 ## Tech-stack canon
 
 | Concern | Choice |
