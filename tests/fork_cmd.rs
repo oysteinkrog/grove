@@ -215,6 +215,7 @@ fn fork_two_positionals_explicit_source() {
         no_fetch: true,
         ephemeral: false,
         ttl: None,
+        copy_source: false,
     };
 
     run(&args, &cx).expect("fork should succeed with 2 positionals");
@@ -280,6 +281,7 @@ fn fork_one_positional_infers_source_from_cwd() {
         no_fetch: true,
         ephemeral: false,
         ttl: None,
+        copy_source: false,
     };
 
     let result = run(&args, &cx);
@@ -327,6 +329,7 @@ fn fork_one_positional_cwd_outside_project_errors() {
         no_fetch: true,
         ephemeral: false,
         ttl: None,
+        copy_source: false,
     };
 
     let result = run(&args, &cx);
@@ -367,6 +370,7 @@ fn fork_three_positionals_returns_error() {
         no_fetch: true,
         ephemeral: false,
         ttl: None,
+        copy_source: false,
     };
 
     let err = run(&args, &cx).unwrap_err();
@@ -417,6 +421,7 @@ fn fork_ephemeral_lands_under_scratch_with_expiry() {
         no_fetch: true,
         ephemeral: true,
         ttl: Some("2w".to_string()),
+        copy_source: false,
     };
 
     run(&args, &cx).expect("fork --ephemeral should succeed");
@@ -442,4 +447,175 @@ fn fork_ephemeral_lands_under_scratch_with_expiry() {
         "expires_at should be ~2w from creation, got {} days",
         (expires_at - before).whole_days()
     );
+}
+
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// True when `dir` is on a filesystem with reflinks, so the base copy path
+/// runs instead of the plain `git worktree add` fallback.
+fn reflink_works(dir: &Path) -> bool {
+    let a = dir.join(".reflink-probe-a");
+    let b = dir.join(".reflink-probe-b");
+    std::fs::write(&a, b"x").unwrap();
+    let ok = Command::new("cp")
+        .args(["--reflink=always"])
+        .arg(&a)
+        .arg(&b)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let _ = std::fs::remove_file(&a);
+    let _ = std::fs::remove_file(&b);
+    ok
+}
+
+/// A source lane at `<work_dir>/src` on branch `feature`, with one commit of
+/// its own plus build output, an ignored file, an untracked file and an
+/// uncommitted edit, none of which a fork from the base may carry.
+fn live_source_lane(clone: &Path, work_dir: &Path) -> std::path::PathBuf {
+    let src = work_dir.join("src");
+    git_out(
+        clone,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            src.to_str().unwrap(),
+            "if/master",
+        ],
+    );
+    std::fs::write(src.join(".gitignore"), "*.db\nbuild/\n").unwrap();
+    std::fs::write(src.join("feature.txt"), "committed\n").unwrap();
+    git_out(&src, &["add", "."]);
+    git_out(&src, &["commit", "-q", "-m", "feature work"]);
+    std::fs::create_dir_all(src.join("build")).unwrap();
+    std::fs::write(src.join("build").join("out.bin"), "object code\n").unwrap();
+    std::fs::write(src.join("local.db"), "local data\n").unwrap();
+    std::fs::write(src.join("notes.txt"), "untracked\n").unwrap();
+    std::fs::write(src.join("feature.txt"), "edited, not committed\n").unwrap();
+    src
+}
+
+/// Step 1 of the grove-snapshot-lanes plan: by default a fork is made from the
+/// clean base checkout and moved to the source branch, so it gets the source's
+/// HEAD and none of its untracked, ignored or build files.
+#[test]
+fn fork_from_base_has_source_head_and_no_local_files() {
+    let (_bare, clone) = make_bare_and_clone("if");
+    let work_dir = TempDir::new().unwrap();
+    let grove_dir = work_dir.path().join(".grove");
+    let src = live_source_lane(clone.path(), work_dir.path());
+
+    let cx = make_context_with_project(
+        clone.path(),
+        work_dir.path(),
+        &grove_dir,
+        "if",
+        "src",
+        "feature",
+    );
+    let args = ForkArgs {
+        positionals: vec!["src".to_string(), "copy".to_string()],
+        issue: None,
+        branch: None,
+        no_fetch: true,
+        ephemeral: false,
+        ttl: None,
+        copy_source: false,
+    };
+    run(&args, &cx).expect("fork from base should succeed");
+
+    let target = work_dir.path().join("copy");
+    assert_eq!(
+        git_out(&target, &["rev-parse", "HEAD"]),
+        git_out(&src, &["rev-parse", "HEAD"]),
+        "the fork must start at the source lane's HEAD"
+    );
+    assert_eq!(git_out(&target, &["branch", "--show-current"]), "copy");
+    assert_eq!(
+        std::fs::read_to_string(target.join("feature.txt")).unwrap(),
+        "committed\n"
+    );
+    for local in ["build", "local.db", "notes.txt"] {
+        assert!(
+            !target.join(local).exists(),
+            "{local} from the source lane must not reach the fork"
+        );
+    }
+    assert_eq!(
+        git_out(&target, &["status", "--porcelain", "--ignored"]),
+        ""
+    );
+    if reflink_works(work_dir.path()) {
+        assert!(
+            grove::git::base::base_path(work_dir.path()).exists(),
+            "with reflinks the fork must be copied from the base checkout"
+        );
+    }
+}
+
+/// `--copy-source` keeps the old behaviour: the source lane itself is copied,
+/// so ignored build output comes along, while edits and untracked files are
+/// still dropped.
+#[test]
+fn fork_copy_source_keeps_build_output() {
+    let (_bare, clone) = make_bare_and_clone("if");
+    let work_dir = TempDir::new().unwrap();
+    let grove_dir = work_dir.path().join(".grove");
+    let src = live_source_lane(clone.path(), work_dir.path());
+
+    let cx = make_context_with_project(
+        clone.path(),
+        work_dir.path(),
+        &grove_dir,
+        "if",
+        "src",
+        "feature",
+    );
+    let args = ForkArgs {
+        positionals: vec!["src".to_string(), "warm".to_string()],
+        issue: None,
+        branch: None,
+        no_fetch: true,
+        ephemeral: false,
+        ttl: None,
+        copy_source: true,
+    };
+    run(&args, &cx).expect("fork --copy-source should succeed");
+
+    let target = work_dir.path().join("warm");
+    assert_eq!(
+        git_out(&target, &["rev-parse", "HEAD"]),
+        git_out(&src, &["rev-parse", "HEAD"])
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("feature.txt")).unwrap(),
+        "committed\n"
+    );
+    assert!(!target.join("notes.txt").exists());
+    if reflink_works(work_dir.path()) {
+        assert!(target.join("build").join("out.bin").exists());
+        assert!(target.join("local.db").exists());
+        assert!(
+            !grove::git::base::base_path(work_dir.path()).exists(),
+            "--copy-source must not touch the base checkout"
+        );
+    } else {
+        eprintln!("no reflinks here: --copy-source fell back to a plain worktree");
+    }
 }

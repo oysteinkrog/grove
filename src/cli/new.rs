@@ -65,29 +65,10 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     // Copy from the clean base checkout, never from the main checkout, which
     // may be far behind and carries ignored files. Stable lanes copy from
     // their own stable base.
-    let default_ref = compute_base_ref(
-        None,
-        &cx.resolved.upstream_remote,
-        &cx.resolved.default_base,
-    );
     let target_dir = target.parent().unwrap_or(&cx.resolved.work_dir);
     let mut copied_from = None;
     let mut reflinked = false;
-    let prepared = match crate::git::base::stable_version(&cx.resolved.upstream_remote, &base_ref) {
-        Some(version) => backend.prepare_stable_base(
-            &cx.resolved.main_repo,
-            &cx.resolved.work_dir,
-            target_dir,
-            &cx.resolved.upstream_remote,
-            version,
-        ),
-        None => backend.prepare_base(
-            &cx.resolved.main_repo,
-            &cx.resolved.work_dir,
-            target_dir,
-            &default_ref,
-        ),
-    };
+    let prepared = prepare_base_for(&backend, cx, &base_ref, target_dir);
     if let Some(prepared) = prepared {
         let base_dir = prepared.path.clone();
         reflinked = backend.worktree_add_reflinked_locked(
@@ -146,6 +127,40 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Prepare the clean base checkout that a lane with base `base_ref` is copied
+/// from: the stable base for a stable branch, the default base otherwise.
+/// Returns `None` when no base can be used; the caller then makes a plain
+/// worktree.
+pub(crate) fn prepare_base_for(
+    backend: &ShellBackend,
+    cx: &RepoContext,
+    base_ref: &str,
+    target_dir: &Path,
+) -> Option<crate::git::base::PreparedBase> {
+    match crate::git::base::stable_version(&cx.resolved.upstream_remote, base_ref) {
+        Some(version) => backend.prepare_stable_base(
+            &cx.resolved.main_repo,
+            &cx.resolved.work_dir,
+            target_dir,
+            &cx.resolved.upstream_remote,
+            version,
+        ),
+        None => {
+            let default_ref = compute_base_ref(
+                None,
+                &cx.resolved.upstream_remote,
+                &cx.resolved.default_base,
+            );
+            backend.prepare_base(
+                &cx.resolved.main_repo,
+                &cx.resolved.work_dir,
+                target_dir,
+                &default_ref,
+            )
+        }
+    }
 }
 
 pub fn validate_tag(tag: &str) -> Result<()> {

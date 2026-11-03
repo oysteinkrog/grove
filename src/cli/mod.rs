@@ -85,6 +85,10 @@ pub enum Command {
         /// Has no effect without `--ephemeral`.
         #[arg(long)]
         ttl: Option<String>,
+        /// Copy the whole source lane, build output included, instead of the
+        /// clean base. Slow on large lanes and heavy on the filesystem.
+        #[arg(long)]
+        copy_source: bool,
     },
     /// List all projects
     List {

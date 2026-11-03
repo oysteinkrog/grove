@@ -1,6 +1,8 @@
 use time::OffsetDateTime;
 
-use crate::cli::new::{compute_branch_name, compute_target_path, resolve_expiry, validate_tag};
+use crate::cli::new::{
+    compute_branch_name, compute_target_path, prepare_base_for, resolve_expiry, validate_tag,
+};
 use crate::error::{GroveError, Result};
 use crate::git::WorktreeMutator;
 use crate::git::shell_backend::ShellBackend;
@@ -15,6 +17,10 @@ pub struct ForkArgs {
     pub no_fetch: bool,
     pub ephemeral: bool,
     pub ttl: Option<String>,
+    /// Copy the whole source lane, build output included, as grove did
+    /// before. Off by default: on a large lane that copy creates about a
+    /// million filesystem entries, and several at once froze the desktop.
+    pub copy_source: bool,
 }
 
 pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
@@ -61,15 +67,34 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
         backend.fetch(&cx.resolved.main_repo, &cx.resolved.upstream_remote)?;
     }
 
-    // Clone the source worktree itself, so the fork also starts with its
-    // build output.
-    let reflinked = backend.worktree_add_reflinked(
-        &cx.resolved.main_repo,
-        &source_project.path,
-        &target,
-        &new_branch,
-        Some(&source_branch),
-    )?;
+    // By default the fork is a copy of the clean base checkout (tracked files
+    // only), moved to the source branch, as `grove new` does. It starts with a
+    // cold build. `--copy-source` copies the source lane itself instead,
+    // build output included.
+    let target_dir = target.parent().unwrap_or(&cx.resolved.work_dir);
+    let mut copied_from = None;
+    let mut reflinked = false;
+    if args.copy_source {
+        reflinked = backend.worktree_add_reflinked(
+            &cx.resolved.main_repo,
+            &source_project.path,
+            &target,
+            &new_branch,
+            Some(&source_branch),
+        )?;
+        copied_from = Some(source_project.path.clone());
+    } else if let Some(prepared) = prepare_base_for(&backend, cx, &source_base, target_dir) {
+        let base_dir = prepared.path.clone();
+        reflinked = backend.worktree_add_reflinked_locked(
+            &cx.resolved.main_repo,
+            &base_dir,
+            &target,
+            &new_branch,
+            Some(&source_branch),
+            Some(prepared.lock),
+        )?;
+        copied_from = Some(base_dir);
+    }
     if !reflinked {
         backend.worktree_add(
             &cx.resolved.main_repo,
@@ -108,11 +133,11 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
     }
     println!("  Branch:        {new_branch}");
     println!("  Path:          {}", target.display());
-    if reflinked {
-        println!(
-            "  Copy:          reflink of {}",
-            source_project.path.display()
-        );
+    if let (true, Some(source)) = (reflinked, &copied_from) {
+        println!("  Copy:          reflink of {}", source.display());
+    }
+    if !args.copy_source {
+        println!("  Build output:  none copied (use --copy-source to copy the source lane)");
     }
     if let Some(expires_at) = expires_at {
         println!(

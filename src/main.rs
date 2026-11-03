@@ -127,6 +127,7 @@ fn dispatch(cli: Cli, config_dir: &std::path::Path) -> anyhow::Result<()> {
             no_fetch,
             ephemeral,
             ttl,
+            copy_source,
         } => {
             let args = grove::cli::fork::ForkArgs {
                 positionals,
@@ -135,6 +136,7 @@ fn dispatch(cli: Cli, config_dir: &std::path::Path) -> anyhow::Result<()> {
                 no_fetch,
                 ephemeral,
                 ttl,
+                copy_source,
             };
             grove::cli::fork::run(&args, &cx).map_err(Into::into)
         }
