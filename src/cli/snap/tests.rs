@@ -35,7 +35,7 @@ fn retention_keeps_hourly_daily_and_the_newest() {
     // An orphan's snaps all age out; a live lane keeps its newest.
     let late = datetime!(2026-12-01 00:00 UTC);
     assert_eq!(retained(&times, late, false), vec![false; 6]);
-    assert_eq!(*retained(&times, late, true).last().unwrap(), true);
+    assert!(*retained(&times, late, true).last().unwrap());
 }
 
 fn context(main: &Path, work_dir: &Path) -> RepoContext {
