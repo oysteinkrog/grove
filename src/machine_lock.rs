@@ -23,7 +23,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -283,12 +283,13 @@ pub fn wait_for_quiet_io(
 
 /// Take the lock for one delete in a batch: wait for quiet I/O first, take
 /// the lock, and check the pressure again once it is held (another command's
-/// delete may just have ended). Gives up with a message after 10 minutes of
-/// high pressure; the caller skips that delete.
+/// delete may just have ended). The waits for quiet I/O of one grove run share
+/// one 10 minute budget; once it is used up, a delete under high pressure is
+/// skipped at once with a message, and one under low pressure still runs.
 pub fn acquire_paced(op: &str, tag: &str) -> Result<MachineLock, String> {
-    static GAVE_UP: AtomicBool = AtomicBool::new(false);
+    static USED_MS: AtomicU64 = AtomicU64::new(0);
     acquire_paced_in_run(
-        &GAVE_UP,
+        &USED_MS,
         tag,
         || MachineLock::acquire(op, tag),
         io_pressure,
@@ -298,12 +299,10 @@ pub fn acquire_paced(op: &str, tag: &str) -> Result<MachineLock, String> {
     )
 }
 
-/// [`acquire_paced_with`] with one pressure budget per grove run, not per
-/// lane: once one delete gave up on high pressure, `gave_up` is set and every
-/// later delete of the run skips at once instead of waiting its own 10
-/// minutes.
+/// [`acquire_paced_with`] with the budget used so far in this run kept in
+/// `used_ms`, so `max_wait` bounds the whole run, not each lane.
 pub fn acquire_paced_in_run(
-    gave_up: &AtomicBool,
+    used_ms: &AtomicU64,
     tag: &str,
     take: impl FnMut() -> Result<MachineLock, String>,
     read: impl FnMut() -> Option<f64>,
@@ -311,15 +310,12 @@ pub fn acquire_paced_in_run(
     poll: Duration,
     max_wait: Duration,
 ) -> Result<MachineLock, String> {
-    if gave_up.load(Ordering::Relaxed) {
-        return Err(
-            "skipped: I/O pressure stayed high earlier in this run; run gc again later".to_string(),
-        );
-    }
-    let result = acquire_paced_with(tag, take, read, sleep, poll, max_wait);
-    if result.as_ref().is_err_and(|e| e.starts_with(PRESSURE_SKIP)) {
-        gave_up.store(true, Ordering::Relaxed);
-    }
+    let mut used = Duration::from_millis(used_ms.load(Ordering::Relaxed));
+    let result = acquire_paced_with(tag, take, read, sleep, poll, max_wait, &mut used);
+    used_ms.store(
+        u64::try_from(used.as_millis()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
     result
 }
 
@@ -335,11 +331,12 @@ pub fn acquire_paced_with(
     mut sleep: impl FnMut(Duration),
     poll: Duration,
     max_wait: Duration,
+    used: &mut Duration,
 ) -> Result<MachineLock, String> {
     // Only time spent waiting for quiet I/O counts against `max_wait`, not
     // time spent waiting for the lock behind another command.
-    let mut waited = Duration::ZERO;
-    loop {
+    let mut waited = *used;
+    let result = loop {
         let left = max_wait.saturating_sub(waited);
         let mut last_report: Option<Duration> = None;
         let outcome = wait_for_quiet_io(
@@ -361,18 +358,23 @@ pub fn acquire_paced_with(
             },
         );
         if let Paced::TimedOut(v) = outcome {
-            return Err(format!(
-                "{PRESSURE_SKIP} {} s for quiet I/O and pressure is still {v:.1} (limit \
-                 {DELETE_IO_PRESSURE_LIMIT}); run gc again later",
+            break Err(format!(
+                "{PRESSURE_SKIP} {} s in this run for quiet I/O and pressure is still {v:.1} \
+                 (limit {DELETE_IO_PRESSURE_LIMIT}); run gc again later",
                 waited.as_secs()
             ));
         }
-        let lock = take().map_err(|e| format!("skipped: {e}"))?;
+        let lock = match take() {
+            Ok(lock) => lock,
+            Err(e) => break Err(format!("skipped: {e}")),
+        };
         match read() {
             Some(v) if v >= DELETE_IO_PRESSURE_LIMIT => drop(lock),
-            _ => return Ok(lock),
+            _ => break Ok(lock),
         }
-    }
+    };
+    *used = waited;
+    result
 }
 
 #[cfg(test)]
@@ -520,6 +522,7 @@ mod tests {
             |_| sleeps += 1,
             Duration::from_millis(1),
             Duration::from_secs(1),
+            &mut Duration::from_secs(0),
         )
         .unwrap();
         assert!(lock.is_held());
@@ -544,44 +547,76 @@ mod tests {
             |_| {},
             Duration::from_millis(1),
             Duration::from_millis(10),
+            &mut Duration::from_secs(0),
         );
         assert!(lock.is_ok(), "{:?}", lock.err());
     }
 
     #[test]
-    fn after_one_pressure_skip_the_rest_of_the_run_skips_at_once() {
-        let gave_up = AtomicBool::new(false);
-        let mut sleeps = 0;
-        let first = acquire_paced_in_run(
-            &gave_up,
+    fn pressure_waits_share_one_budget_per_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let used = AtomicU64::new(0);
+        let poll = Duration::from_secs(5);
+        let max = Duration::from_secs(15);
+        // Lane one: high twice, then quiet. Two pauses, 10 s of the 15 s.
+        let mut readings = vec![50.0, 50.0, 1.0, 1.0].into_iter();
+        let one = acquire_paced_in_run(
+            &used,
             "one",
+            || Ok(MachineLock::acquire_in(dir.path(), "delete", "one").unwrap()),
+            || readings.next(),
+            |_| {},
+            poll,
+            max,
+        );
+        assert!(one.is_ok());
+        drop(one);
+        assert_eq!(used.load(Ordering::Relaxed), 10_000);
+
+        // Lane two: one more pause uses the budget up, then it is skipped.
+        let mut sleeps = 0;
+        let two = acquire_paced_in_run(
+            &used,
+            "two",
             || panic!("the lock must not be taken"),
             || Some(50.0),
             |_| sleeps += 1,
-            Duration::from_secs(5),
-            Duration::from_secs(15),
+            poll,
+            max,
         );
-        assert!(first.is_err());
-        assert_eq!(sleeps, 3);
-        assert!(gave_up.load(Ordering::Relaxed));
+        assert!(two.err().unwrap().contains("15 s in this run"));
+        assert_eq!(sleeps, 1);
 
-        let second = acquire_paced_in_run(
-            &gave_up,
-            "two",
+        // Lane three: no budget left, high pressure skips without a pause.
+        let three = acquire_paced_in_run(
+            &used,
+            "three",
             || panic!("the lock must not be taken"),
-            || panic!("pressure must not be read again"),
-            |_| panic!("the second lane must not wait"),
-            Duration::from_secs(5),
-            Duration::from_secs(15),
+            || Some(50.0),
+            |_| panic!("no budget left to wait"),
+            poll,
+            max,
         );
-        assert!(second.err().unwrap().contains("earlier in this run"));
+        assert!(three.is_err());
+
+        // Lane four: no budget left, but pressure is low, so it runs.
+        let four = acquire_paced_in_run(
+            &used,
+            "four",
+            || Ok(MachineLock::acquire_in(dir.path(), "delete", "four").unwrap()),
+            || Some(1.0),
+            |_| {},
+            poll,
+            max,
+        );
+        assert!(four.is_ok());
     }
 
     #[test]
-    fn a_broken_lock_does_not_end_the_run() {
-        let gave_up = AtomicBool::new(false);
+    fn a_broken_lock_does_not_use_the_budget() {
+        let used = AtomicU64::new(0);
         let r = acquire_paced_in_run(
-            &gave_up,
+            &used,
             "one",
             || Err("no lock".to_string()),
             || Some(0.0),
@@ -590,7 +625,7 @@ mod tests {
             Duration::from_secs(15),
         );
         assert!(r.is_err());
-        assert!(!gave_up.load(Ordering::Relaxed));
+        assert_eq!(used.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -602,6 +637,7 @@ mod tests {
             |_| {},
             Duration::from_secs(5),
             Duration::from_secs(15),
+            &mut Duration::from_secs(0),
         )
         .err()
         .unwrap();
@@ -617,6 +653,7 @@ mod tests {
             |_| {},
             Duration::from_secs(5),
             Duration::from_secs(15),
+            &mut Duration::from_secs(0),
         )
         .err()
         .unwrap();
