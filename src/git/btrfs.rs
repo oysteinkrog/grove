@@ -304,11 +304,7 @@ pub fn delete_subvolume(path: &Path, nested: &[PathBuf]) -> Result<Deleted, Btrf
     }
     if rm_allowed(path) {
         for inner in nested.iter().filter(|p| is_subvolume(p)) {
-            btrfs(&[
-                "subvolume".as_ref(),
-                "delete".as_ref(),
-                inner.as_os_str(),
-            ])?;
+            btrfs(&["subvolume".as_ref(), "delete".as_ref(), inner.as_os_str()])?;
         }
         match btrfs(&["subvolume".as_ref(), "delete".as_ref(), path.as_os_str()]) {
             Ok(()) => return Ok(Deleted::Fast),

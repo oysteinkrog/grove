@@ -22,7 +22,6 @@ use crate::machine_lock::{MachineLock, tag_of};
 
 use super::shell_backend::{ShellBackend, has_submodules, reflink_enabled};
 use std::fs::File;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 /// Path of the base checkout for a work_dir.
@@ -160,8 +159,9 @@ impl ShellBackend {
     ) -> Result<Option<PreparedBase>, String> {
         std::fs::create_dir_all(grove_dir).map_err(|e| e.to_string())?;
         std::fs::create_dir_all(target_dir).map_err(|e| e.to_string())?;
-        if !same_device(grove_dir, target_dir) {
-            // Not an error: reflinks just cannot cross filesystems.
+        if !super::btrfs::same_filesystem(grove_dir, target_dir) {
+            // Not an error: reflinks just cannot cross filesystems. Compared by
+            // filesystem id, not st_dev: each btrfs subvolume has its own.
             return Ok(None);
         }
 
@@ -276,13 +276,6 @@ fn lock_base(base: &Path) -> Result<File, String> {
         lock.lock().map_err(|e| e.to_string())?;
     }
     Ok(lock)
-}
-
-fn same_device(a: &Path, b: &Path) -> bool {
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(ma), Ok(mb)) => ma.dev() == mb.dev(),
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -461,6 +454,56 @@ mod tests {
         drop(held);
         assert!(worker.join().unwrap(), "the reflink copy should run");
         assert_eq!(git(&target, &["status", "--porcelain", "--ignored"]), "");
+    }
+
+    /// A target directory that is its own btrfs subvolume has another
+    /// st_dev but the same filesystem, so the base is still used.
+    #[test]
+    fn base_is_used_for_a_target_dir_on_another_subvolume() {
+        let Some(tmp) = crate::git::btrfs::tests::btrfs_scratch() else {
+            return;
+        };
+        let work_dir = tmp.path().to_path_buf();
+        let main = work_dir.join("master");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(
+            &main,
+            &[
+                "-c",
+                "user.email=t@e",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "one",
+            ],
+        );
+        let scratch = work_dir.join(".scratch");
+        crate::git::btrfs::create_subvolume(&scratch).unwrap();
+        use std::os::unix::fs::MetadataExt;
+        assert_ne!(
+            std::fs::metadata(&scratch).unwrap().dev(),
+            std::fs::metadata(&work_dir).unwrap().dev()
+        );
+        let prepared = ShellBackend::new().prepare_base(&main, &work_dir, &scratch, "main");
+        assert!(
+            prepared.is_some(),
+            "the base must be usable across subvolumes"
+        );
+        drop(prepared);
+        git(
+            &main,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                base_path(&work_dir).to_str().unwrap(),
+            ],
+        );
+        crate::git::btrfs::delete_subvolume(&scratch, &[]).unwrap();
     }
 
     #[test]

@@ -1414,6 +1414,7 @@ dependencies = [
  "gix",
  "insta",
  "is-terminal",
+ "libc",
  "owo-colors",
  "rayon",
  "serde",
