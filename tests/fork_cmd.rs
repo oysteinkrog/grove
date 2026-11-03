@@ -14,6 +14,7 @@ use grove::registry::project::Project;
 use grove::repo::RepoContext;
 
 fn make_bare_and_clone(remote_name: &str) -> (TempDir, TempDir) {
+    common::isolate_machine_lock();
     let bare = TempDir::new().unwrap();
     let clone = TempDir::new().unwrap();
 
@@ -117,6 +118,7 @@ fn make_context_with_project(
     source_tag: &str,
     source_branch: &str,
 ) -> RepoContext {
+    common::isolate_machine_lock();
     use time::OffsetDateTime;
 
     let mut repos = BTreeMap::new();

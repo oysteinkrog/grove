@@ -330,12 +330,12 @@ pub fn acquire_paced_in_run(
     poll: Duration,
     max_wait: Duration,
 ) -> Result<MachineLock, String> {
-    let mut used = Duration::from_millis(used_ms.load(Ordering::Relaxed));
+    let start = Duration::from_millis(used_ms.load(Ordering::Relaxed));
+    let mut used = start;
     let result = acquire_paced_with(tag, take, read, sleep, poll, max_wait, &mut used);
-    used_ms.store(
-        u64::try_from(used.as_millis()).unwrap_or(u64::MAX),
-        Ordering::Relaxed,
-    );
+    // Add only this call's waiting, so waits on two threads both count.
+    let spent = u64::try_from(used.saturating_sub(start).as_millis()).unwrap_or(u64::MAX);
+    used_ms.fetch_add(spent, Ordering::Relaxed);
     result
 }
 
@@ -389,7 +389,13 @@ pub fn acquire_paced_with(
             Err(e) => break Err(format!("skipped: {e}")),
         };
         match read() {
-            Some(v) if v >= DELETE_IO_PRESSURE_LIMIT => drop(lock),
+            Some(v) if v >= DELETE_IO_PRESSURE_LIMIT => {
+                // Back off before trying again, and count it, so pressure
+                // hovering at the limit cannot spin on the lock.
+                drop(lock);
+                sleep(poll);
+                waited += poll;
+            }
             _ => break Ok(lock),
         }
     };
@@ -550,7 +556,7 @@ mod tests {
         assert!(lock.is_held());
         assert_eq!(takes, 2, "the lock is dropped and taken again");
         assert_eq!(readings.next(), None, "all four readings were used");
-        assert_eq!(sleeps, 0);
+        assert_eq!(sleeps, 1, "one back-off pause after the high reading");
     }
 
     #[test]

@@ -16,6 +16,7 @@ use grove::repo::RepoContext;
 ///
 /// Returns `(bare_dir, clone_dir)` — both are kept alive by the caller.
 fn make_bare_and_clone(remote_name: &str) -> (TempDir, TempDir) {
+    common::isolate_machine_lock();
     let bare = TempDir::new().unwrap();
     let clone = TempDir::new().unwrap();
 
@@ -126,6 +127,7 @@ fn make_context(
     upstream_remote: &str,
     default_base: &str,
 ) -> RepoContext {
+    common::isolate_machine_lock();
     let mut repos = BTreeMap::new();
     repos.insert(
         "test".to_string(),
