@@ -115,11 +115,12 @@ fn two_concurrent_creates_serialize_on_the_copy_lock() {
     .spawn()
     .unwrap();
 
-    // Start the second run only once the first holds the lock.
+    // Start the second run only once the first holds the lock for its lane
+    // copy. (It also takes the lock earlier, for moving its base checkout.)
     let holder_file = lock_dir.join("copy.lock.json");
     let deadline = Instant::now() + Duration::from_secs(60);
     let holder = loop {
-        if let Some(h) = read_holder(&holder_file) {
+        if let Some(h) = read_holder(&holder_file).filter(|h| h.tag == "lane-a") {
             break h;
         }
         assert!(

@@ -8,7 +8,7 @@
 //! lives in a per-user directory and covers every repo on the machine:
 //!
 //! - `$GROVE_LOCK_DIR` when set (tests use it),
-//! - else `$XDG_RUNTIME_DIR/grove`,
+//! - else `/run/user/<uid>/grove`, or `$XDG_RUNTIME_DIR/grove` without it,
 //! - else `~/.local/state/grove`.
 //!
 //! The holder writes `copy.lock.json` next to the lock with its pid, tag,
@@ -24,7 +24,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -59,41 +59,50 @@ impl Holder {
     }
 }
 
-/// The directory of the machine-wide lock.
-pub fn lock_dir() -> Option<PathBuf> {
+/// The directories to try for the machine-wide lock, best first.
+/// `$GROVE_LOCK_DIR`, when set, is the only one.
+pub fn lock_dirs() -> Vec<PathBuf> {
     if let Some(dir) = std::env::var_os(LOCK_DIR_ENV).filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(dir));
+        return vec![PathBuf::from(dir)];
     }
     if cfg!(test) {
         // Unit tests never touch the real machine lock.
-        return Some(std::env::temp_dir().join("grove-unit-test-locks"));
+        return vec![std::env::temp_dir().join("grove-unit-test-locks")];
     }
+    let mut dirs = Vec::new();
     if let Some(dir) = runtime_dir() {
-        return Some(dir.join("grove"));
+        dirs.push(dir.join("grove"));
     }
-    directories::BaseDirs::new().map(|b| b.home_dir().join(".local").join("state").join("grove"))
+    if let Some(b) = directories::BaseDirs::new() {
+        dirs.push(b.home_dir().join(".local").join("state").join("grove"));
+    }
+    dirs
 }
 
-/// The user's runtime directory. Cron and some ssh sessions run without
-/// `$XDG_RUNTIME_DIR`, so `/run/user/<uid>` is used when it exists: every
-/// grove run of one user must pick the same lock file.
+/// The directory of the machine-wide lock when every candidate works.
+pub fn lock_dir() -> Option<PathBuf> {
+    lock_dirs().into_iter().next()
+}
+
+/// The user's runtime directory. Every grove run of one user must pick the
+/// same lock file, and cron or some ssh sessions have no `$XDG_RUNTIME_DIR`.
 fn runtime_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-        let dir = PathBuf::from(dir);
-        if dir.is_dir() {
-            return Some(dir);
-        }
-    }
+    // `/run/user/<uid>` first: a process with its own `$XDG_RUNTIME_DIR`
+    // (some systemd units, `sudo -u`) must still find the same lock.
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let uid = std::fs::metadata("/proc/self").ok()?.uid();
-        let dir = PathBuf::from(format!("/run/user/{uid}"));
-        if dir.is_dir() {
-            return Some(dir);
+        if let Ok(meta) = std::fs::metadata("/proc/self") {
+            let dir = PathBuf::from(format!("/run/user/{}", meta.uid()));
+            if dir.is_dir() {
+                return Some(dir);
+            }
         }
     }
-    None
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_dir())
 }
 
 /// The held lock. Dropping it removes the holder file and releases the lock.
@@ -106,25 +115,37 @@ impl MachineLock {
     /// Take the machine-wide lock for `op` (`copy` or `delete`) on `tag`,
     /// waiting while another grove command holds it.
     ///
-    /// Never fails: when the lock file cannot be made, it warns and returns a
-    /// guard that holds nothing, so a broken lock directory cannot stop grove.
-    pub fn acquire(op: &str, tag: &str) -> Self {
+    /// Tries each of [`lock_dirs`] in turn. Fails when none works: the heavy
+    /// work must not run unserialized just because the lock is broken.
+    /// On Windows it holds nothing and never fails.
+    pub fn acquire(op: &str, tag: &str) -> Result<Self, String> {
         if !cfg!(unix) {
-            return Self::none();
+            return Ok(Self::none());
         }
-        let Some(dir) = lock_dir() else {
-            return Self::none();
-        };
-        match Self::acquire_in(&dir, op, tag) {
-            Ok(lock) => lock,
-            Err(e) => {
-                eprintln!(
-                    "warning: could not take the grove lock in {}: {e}; going on without it",
-                    dir.display()
-                );
-                Self::none()
+        let mut errors = Vec::new();
+        for dir in lock_dirs() {
+            match Self::acquire_in(&dir, op, tag) {
+                Ok(lock) => return Ok(lock),
+                Err(e) => errors.push(format!("{}: {e}", dir.display())),
             }
         }
+        if errors.is_empty() {
+            errors.push("no lock directory found".to_string());
+        }
+        Err(format!(
+            "could not take the grove machine lock ({}); set {LOCK_DIR_ENV} to a writable directory",
+            errors.join("; ")
+        ))
+    }
+
+    /// Take the lock for cleanup that must run anyway (removing a half-made
+    /// tree): when the lock cannot be taken, warn and go on without it,
+    /// because leaving the half-made tree behind is worse.
+    pub fn acquire_for_cleanup(tag: &str) -> Self {
+        Self::acquire("delete", tag).unwrap_or_else(|e| {
+            eprintln!("warning: {e}; removing the half-made tree without it");
+            Self::none()
+        })
     }
 
     /// Same as [`Self::acquire`] with an explicit directory, returning errors.
@@ -308,16 +329,17 @@ pub fn acquire_paced(op: &str, tag: &str) -> Result<MachineLock, String> {
 /// in.
 pub fn acquire_paced_with(
     tag: &str,
-    mut take: impl FnMut() -> MachineLock,
+    mut take: impl FnMut() -> Result<MachineLock, String>,
     mut read: impl FnMut() -> Option<f64>,
     mut sleep: impl FnMut(Duration),
     poll: Duration,
     max_wait: Duration,
 ) -> Result<MachineLock, String> {
-    let start = Instant::now();
+    // Only time spent waiting for quiet I/O counts against `max_wait`, not
+    // time spent waiting for the lock behind another command.
     let mut waited = Duration::ZERO;
     loop {
-        let left = max_wait.saturating_sub(waited.max(start.elapsed()));
+        let left = max_wait.saturating_sub(waited);
         let mut last_report: Option<Duration> = None;
         let outcome = wait_for_quiet_io(
             &mut read,
@@ -339,12 +361,12 @@ pub fn acquire_paced_with(
         );
         if let Paced::TimedOut(v) = outcome {
             return Err(format!(
-                "skipped: I/O pressure stayed at {v:.1} or more (limit \
-                 {DELETE_IO_PRESSURE_LIMIT}) for {} s; run gc again later",
-                max_wait.as_secs()
+                "skipped: waited {} s for quiet I/O and pressure is still {v:.1} (limit \
+                 {DELETE_IO_PRESSURE_LIMIT}); run gc again later",
+                waited.as_secs()
             ));
         }
-        let lock = take();
+        let lock = take().map_err(|e| format!("skipped: {e}"))?;
         match read() {
             Some(v) if v >= DELETE_IO_PRESSURE_LIMIT => drop(lock),
             _ => return Ok(lock),
@@ -491,7 +513,7 @@ mod tests {
             "lane",
             || {
                 takes += 1;
-                MachineLock::acquire_in(dir.path(), "delete", "lane").unwrap()
+                Ok(MachineLock::acquire_in(dir.path(), "delete", "lane").unwrap())
             },
             || readings.next(),
             |_| sleeps += 1,
@@ -503,6 +525,41 @@ mod tests {
         assert_eq!(takes, 2, "the lock is dropped and taken again");
         assert_eq!(readings.next(), None, "all four readings were used");
         assert_eq!(sleeps, 0);
+    }
+
+    #[test]
+    fn time_waiting_for_the_lock_does_not_count_against_the_pressure_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        // Quiet, then the lock takes longer than the whole pressure budget,
+        // then high once held (another delete just ended), then quiet.
+        let mut readings = vec![1.0, 20.0, 1.0, 1.0].into_iter();
+        let lock = acquire_paced_with(
+            "lane",
+            || {
+                std::thread::sleep(Duration::from_millis(50));
+                Ok(MachineLock::acquire_in(dir.path(), "delete", "lane").unwrap())
+            },
+            || readings.next(),
+            |_| {},
+            Duration::from_millis(1),
+            Duration::from_millis(10),
+        );
+        assert!(lock.is_ok(), "{:?}", lock.err());
+    }
+
+    #[test]
+    fn a_broken_lock_skips_the_delete() {
+        let err = acquire_paced_with(
+            "lane",
+            || Err("no lock directory".to_string()),
+            || Some(0.0),
+            |_| {},
+            Duration::from_secs(5),
+            Duration::from_secs(15),
+        )
+        .err()
+        .unwrap();
+        assert!(err.starts_with("skipped:"), "{err}");
     }
 
     #[test]

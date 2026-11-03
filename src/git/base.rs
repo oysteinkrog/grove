@@ -18,6 +18,8 @@
 //! that differ. `GROVE_STABLE_BASES=0` sends stable lanes back to the
 //! default base.
 
+use crate::machine_lock::{MachineLock, tag_of};
+
 use super::shell_backend::{ShellBackend, has_submodules, reflink_enabled};
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
@@ -169,8 +171,12 @@ impl ShellBackend {
             if !base.join(".git").is_file() {
                 return Err("it exists but is not a git worktree; remove it to recreate".into());
             }
+            // Moving an old base to a new upstream commit can rewrite many
+            // files: the same load the machine lock serializes.
+            let heavy = MachineLock::acquire("copy", &tag_of(base))?;
             self.run(base, &["checkout", "-q", "--detach", base_ref])
                 .map_err(|e| e.to_string())?;
+            drop(heavy);
         } else {
             eprintln!(
                 "Creating the base checkout {} at {base_ref} (first use, takes a while)",
@@ -198,17 +204,18 @@ impl ShellBackend {
                     self.fill_from_source(seed, base, Some(seed_lock))
                         .map_err(|e| e.to_string())
                 }),
-                None => self
-                    .run(
+                // A full checkout of every tracked file.
+                None => MachineLock::acquire("copy", &tag_of(base)).and_then(|_heavy| {
+                    self.run(
                         repo_path,
                         &["worktree", "add", "--detach", base_str, base_ref],
                     )
                     .map(|_| ())
-                    .map_err(|e| e.to_string()),
+                    .map_err(|e| e.to_string())
+                }),
             };
             if let Err(e) = created {
-                let delete_lock = crate::machine_lock::MachineLock::acquire(
-                    "delete",
+                let delete_lock = crate::machine_lock::MachineLock::acquire_for_cleanup(
                     &crate::machine_lock::tag_of(base),
                 );
                 let _ = self.run(repo_path, &["worktree", "remove", "--force", base_str]);
@@ -217,7 +224,9 @@ impl ShellBackend {
             }
             // LFS files are full copies after a checkout; share their blocks
             // with the LFS store.
+            let heavy = MachineLock::acquire("copy", &tag_of(base))?;
             self.lfs_dedup_or_warn(base);
+            drop(heavy);
         }
 
         let dirty = self
@@ -402,6 +411,42 @@ mod tests {
         for h in handles {
             assert_eq!(h.join().unwrap(), "");
         }
+    }
+
+    /// The copy lock is taken before `git worktree add`, so a lane waiting
+    /// for it is not yet a registered, empty worktree that gc could see.
+    #[test]
+    fn lane_is_not_registered_while_waiting_for_the_copy_lock() {
+        let Some((_tmp, work_dir, main)) = fixture() else {
+            return;
+        };
+        let scratch = work_dir.join(".scratch");
+        let Some(prepared) = ShellBackend::new().prepare_base(&main, &work_dir, &scratch, "main")
+        else {
+            return;
+        };
+        let base = prepared.path.clone();
+        drop(prepared);
+
+        let held = MachineLock::acquire("copy", "other").unwrap();
+        let target = scratch.join("waiting");
+        let worker = {
+            let (main, base, target) = (main.clone(), base.clone(), target.clone());
+            std::thread::spawn(move || {
+                ShellBackend::new()
+                    .worktree_add_reflinked(&main, &base, &target, "waiting", Some("main"))
+                    .unwrap()
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let listed = git(&main, &["worktree", "list", "--porcelain"]);
+        assert!(
+            !listed.contains(target.to_str().unwrap()),
+            "the lane must not be registered before the copy lock is held: {listed}"
+        );
+        drop(held);
+        assert!(worker.join().unwrap(), "the reflink copy should run");
+        assert_eq!(git(&target, &["status", "--porcelain", "--ignored"]), "");
     }
 
     #[test]

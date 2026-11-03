@@ -143,6 +143,14 @@ impl ShellBackend {
             return Ok(false);
         }
 
+        // One whole-tree copy at a time on this machine: several at once
+        // froze the desktop. Taken before `worktree add`, so no empty,
+        // registered worktree waits in the work dir while this queues, and
+        // held until the reset, the clean or the cleanup of a failed copy is
+        // done: when the base is old, the reset to the lane's commit can
+        // rewrite many files, which is the same metadata load.
+        let copy_lock = take_copy_lock(target)?;
+
         let target_str = target.to_str().unwrap_or_default();
         match base {
             Some(base_ref) => self.run(
@@ -163,16 +171,13 @@ impl ShellBackend {
             )?,
         }
 
-        if let Err(e) = self.fill_from_source(source, target, source_lock) {
+        if let Err(e) = self.fill_from_source_held(source, target, source_lock) {
             // Leave nothing half-built behind. The branch stays, as it would
             // after any failed `grove new`, and the error says so.
-            // Removing a half copy is as heavy as making it.
-            let delete_lock = crate::machine_lock::MachineLock::acquire(
-                "delete",
-                &crate::machine_lock::tag_of(target),
-            );
+            // Removing a half copy is as heavy as making it, so the copy lock
+            // stays held for it.
             let removed = self.run(repo_path, &["worktree", "remove", "--force", target_str]);
-            drop(delete_lock);
+            drop(copy_lock);
             let cleanup = match removed {
                 Ok(()) => "The worktree was removed.".to_string(),
                 Err(rm) => format!(
@@ -187,10 +192,27 @@ impl ShellBackend {
                 ),
             });
         }
+        drop(copy_lock);
         Ok(true)
     }
 
+    /// Fill the empty worktree `target` from `source`, taking the
+    /// machine-wide copy lock for the whole fill.
     pub(super) fn fill_from_source(
+        &self,
+        source: &Path,
+        target: &Path,
+        source_lock: Option<std::fs::File>,
+    ) -> Result<(), GroveError> {
+        let copy_lock = take_copy_lock(target)?;
+        let filled = self.fill_from_source_held(source, target, source_lock);
+        drop(copy_lock);
+        filled
+    }
+
+    /// [`Self::fill_from_source`] for a caller that already holds the copy
+    /// lock.
+    fn fill_from_source_held(
         &self,
         source: &Path,
         target: &Path,
@@ -210,13 +232,6 @@ impl ShellBackend {
                 entries.push(entry.path());
             }
         }
-        // One whole-tree copy at a time on this machine: several at once
-        // froze the desktop. Held through the reset and clean below as well:
-        // when the base is old, the reset to the lane's commit can rewrite
-        // many files, which is the same metadata load.
-        let copy_lock =
-            crate::machine_lock::MachineLock::acquire("copy", &crate::machine_lock::tag_of(target));
-
         if !entries.is_empty() {
             let output = Command::new("cp")
                 .args(["-a", "--reflink=always", "-t"])
@@ -269,9 +284,18 @@ impl ShellBackend {
         let _ = self.run(target, &["update-index", "-q", "--refresh"]);
         self.run(target, &["reset", "--hard", "-q", "HEAD"])?;
         self.run(target, &["clean", "-fdq"])?;
-        drop(copy_lock);
         Ok(())
     }
+}
+
+/// Take the machine-wide copy lock for making `target`.
+fn take_copy_lock(target: &Path) -> Result<crate::machine_lock::MachineLock, GroveError> {
+    crate::machine_lock::MachineLock::acquire("copy", &crate::machine_lock::tag_of(target)).map_err(
+        |e| GroveError::GitCommandFailed {
+            cmd: "take the grove copy lock".to_string(),
+            stderr: e,
+        },
+    )
 }
 
 /// True when `source` declares at least one submodule. A `.gitmodules` file

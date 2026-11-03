@@ -82,8 +82,18 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
         copied_from = Some(base_dir);
     }
     if !reflinked {
+        // A plain checkout writes every tracked file: serialize it too.
+        let heavy = crate::machine_lock::MachineLock::acquire(
+            "copy",
+            &crate::machine_lock::tag_of(&target),
+        )
+        .map_err(|e| GroveError::GitCommandFailed {
+            cmd: "take the grove copy lock".to_string(),
+            stderr: e,
+        })?;
         backend.worktree_add(&cx.resolved.main_repo, &target, &branch, Some(&base_ref))?;
         backend.lfs_dedup_or_warn(&target);
+        drop(heavy);
     }
 
     let project = Project {
