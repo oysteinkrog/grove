@@ -54,11 +54,17 @@ fn drop_registry_entry(tag: &str, grove_dir: &Path) -> Result<String, String> {
     // grove command adds meanwhile is kept.
     // Only while its directory is still missing: a new lane registered under
     // the same tag since the scan has a directory and is kept.
-    match Registry::remove_on_disk_if(grove_dir, tag, |p| !p.path.exists()) {
+    let mut directory_back = false;
+    match Registry::remove_on_disk_if(grove_dir, tag, |p| {
+        directory_back = p.path.exists();
+        !directory_back
+    }) {
         Ok(Some(_)) => Ok(format!("dropped registry entry '{tag}'")),
-        Ok(None) => Err(format!(
-            "'{tag}' is gone or has a directory again since the scan; left in place"
+        Ok(None) if directory_back => Err(format!(
+            "'{tag}' has a directory again since the scan; left in place"
         )),
+        // Someone else (grove done, another gc) dropped it first.
+        Ok(None) => Ok(format!("registry entry '{tag}' was already dropped")),
         Err(e) => Err(format!("could not drop '{tag}': {e}")),
     }
 }
@@ -170,33 +176,45 @@ fn delete_checked_branch(
             "; branch {branch} was left in place (its commit could not be checked)"
         ));
     };
-    let tip = exec::git(
+    let refname = format!("refs/heads/{branch}");
+    // `update-ref -d` does not refuse a branch another worktree has checked
+    // out, as `branch -D` does, so check that first.
+    let checked_out_elsewhere = exec::git(
         &layout.main_repo,
-        &[
-            "rev-parse",
-            "--verify",
-            "-q",
-            &format!("refs/heads/{branch}"),
-        ],
+        &["worktree", "list", "--porcelain"],
         QUICK_GIT_TIMEOUT,
     )
-    .map(|t| t.trim().to_string())
-    .unwrap_or_default();
-    if tip != checked {
+    .map(|list| {
+        list.lines()
+            .any(|l| l.strip_prefix("branch ") == Some(refname.as_str()))
+    })
+    .unwrap_or(true);
+    if checked_out_elsewhere {
         return Ok(format!(
-            "; branch {branch} was left in place (its tip is not the checked commit {checked})"
+            "; branch {branch} was left in place (checked out in another worktree)"
         ));
     }
+    // Delete only if the branch is still at the checked commit, in one ref
+    // transaction: a branch moved by any git command in between is kept.
     match exec::git(
         &layout.main_repo,
-        &["branch", "-D", branch],
+        &["update-ref", "-d", &refname, checked],
         QUICK_GIT_TIMEOUT,
     ) {
         Ok(_) => {
+            // The branch section (upstream and the like) goes with it, as
+            // `branch -D` would do. Nothing to do when there is none.
+            let _ = exec::git(
+                &layout.main_repo,
+                &["config", "--remove-section", &format!("branch.{branch}")],
+                QUICK_GIT_TIMEOUT,
+            );
             log_branch_deletion(layout, path, branch, checked)?;
             Ok(format!(" and deleted branch {branch} ({checked})"))
         }
-        Err(e) => Ok(format!("; branch {branch} was left in place ({e})")),
+        Err(_) => Ok(format!(
+            "; branch {branch} was left in place (its tip is not the checked commit {checked})"
+        )),
     }
 }
 
@@ -337,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn dropping_an_unknown_tag_reports_an_error() {
+    fn dropping_an_already_dropped_tag_is_not_a_failure() {
         let dir = TempDir::new().unwrap();
         let grove_dir = dir.path().join(".grove");
         Registry::default().save(&grove_dir).unwrap();
@@ -350,7 +368,9 @@ mod tests {
                 tag: "ghost".to_string(),
             },
         );
-        assert!(apply(&finding, &layout, &grove_dir).is_err());
+        // Someone else dropped it first: nothing left to do, not a failure.
+        let msg = apply(&finding, &layout, &grove_dir).unwrap();
+        assert!(msg.contains("already dropped"), "{msg}");
     }
 
     #[test]
@@ -548,9 +568,32 @@ mod tests {
         let msg = delete_checked_branch(&layout, &lane, "kept", None).unwrap();
         assert!(msg.contains("left in place"), "{msg}");
 
+        git_in(&main, &["config", "branch.kept.remote", "origin"]);
         let msg = delete_checked_branch(&layout, &lane, "kept", Some(&checked)).unwrap();
         assert!(msg.contains("deleted branch kept"), "{msg}");
         assert_eq!(git_in(&main, &["branch", "--list", "kept"]), "");
+        assert!(
+            !std::process::Command::new("git")
+                .arg("-C")
+                .arg(&main)
+                .args(["config", "--get", "branch.kept.remote"])
+                .status()
+                .unwrap()
+                .success(),
+            "the branch's config section goes with it"
+        );
+
+        // A branch checked out in another worktree is kept even at the
+        // checked commit.
+        git_in(&main, &["branch", "busy", &checked]);
+        let other = dir.path().join("other");
+        git_in(
+            &main,
+            &["worktree", "add", "-q", other.to_str().unwrap(), "busy"],
+        );
+        let msg = delete_checked_branch(&layout, &lane, "busy", Some(&checked)).unwrap();
+        assert!(msg.contains("checked out in another worktree"), "{msg}");
+        git_in(&main, &["rev-parse", "--verify", "refs/heads/busy"]);
     }
 
     #[test]

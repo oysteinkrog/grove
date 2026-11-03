@@ -48,7 +48,10 @@ fn resolve_tag(args: &DoneArgs, cx: &RepoContext) -> Result<String> {
 pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
     let tag = resolve_tag(args, cx)?;
     // Fail fast on an unknown tag instead of after waiting for the lock.
-    if !cx.registry.projects.contains_key(&tag) {
+    // Read from disk: the tag may have been registered after this started.
+    let on_disk = crate::registry::Registry::load(&cx.grove_dir())
+        .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
+    if !on_disk.projects.contains_key(&tag) {
         return Err(GroveError::WorktreeNotFound(std::path::PathBuf::from(&tag)));
     }
 
@@ -108,26 +111,57 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
         }
     }
 
-    backend.worktree_remove(&cx.resolved.main_repo, &worktree_path, args.force)?;
+    // The remote branch as last fetched, read before anything is removed, so
+    // the remote delete below only removes that commit.
+    let remote_tip = backend
+        .run_stdout(
+            &cx.resolved.main_repo,
+            &[
+                "rev-parse",
+                "--verify",
+                "-q",
+                &format!("refs/remotes/{}/{branch}", cx.resolved.fork_remote),
+            ],
+        )
+        .ok()
+        .filter(|oid| !oid.is_empty());
 
-    // Deregister while the lock is still held, and only the entry checked
-    // above: a tag that was dropped and registered again for a new lane
-    // meanwhile is kept. An entry already gone is fine: the lane is.
-    crate::registry::Registry::remove_on_disk_if(&cx.grove_dir(), &tag, |p| p.same_lane(&checked))
-        .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
+    backend.worktree_remove(&cx.resolved.main_repo, &worktree_path, args.force)?;
 
     if !args.keep_local {
         // Ignore error: branch may already be gone if worktree removal cleaned it up
         let _ = backend.branch_delete(&cx.resolved.main_repo, &branch);
     }
-    // The remote delete goes over the network; nothing below needs the lock.
+    // The remote delete goes over the network; it does not need the lock.
     drop(delete_lock);
 
     if !args.keep_remote {
-        // Ignore error: remote may not exist or branch may not be pushed
-        let _ =
-            backend.remote_branch_delete(&cx.resolved.main_repo, &cx.resolved.fork_remote, &branch);
+        // Ignore error: remote may not exist or branch may not be pushed.
+        let _ = match &remote_tip {
+            // With a lease, so a branch someone pushed to since is kept.
+            Some(oid) => backend.run(
+                &cx.resolved.main_repo,
+                &[
+                    "push",
+                    &format!("--force-with-lease=refs/heads/{branch}:{oid}"),
+                    &cx.resolved.fork_remote,
+                    &format!(":refs/heads/{branch}"),
+                ],
+            ),
+            None => backend.remote_branch_delete(
+                &cx.resolved.main_repo,
+                &cx.resolved.fork_remote,
+                &branch,
+            ),
+        };
     }
+
+    // Deregister last: while the entry exists, `grove new` cannot reuse the
+    // tag (and its branch) under this command's feet. Only the entry checked
+    // above goes; one registered again for a new lane is kept, and one
+    // already gone is fine.
+    crate::registry::Registry::remove_on_disk_if(&cx.grove_dir(), &tag, |p| p.same_lane(&checked))
+        .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
 
     crate::events::record(&event);
 
@@ -399,6 +433,60 @@ mod tests {
         assert!(removed.is_none());
         let loaded = Registry::load(&grove_dir).unwrap();
         assert_eq!(loaded.projects["lane"].branch, "new-branch");
+    }
+
+    /// The remote branch is deleted with a lease: work someone pushed to it
+    /// after the last fetch is kept.
+    #[test]
+    fn remote_branch_pushed_to_since_the_fetch_is_kept() {
+        let (bare, main_repo) = init_bare_and_clone();
+        let work_dir = TempDir::new().unwrap();
+        let wt = make_worktree_on_branch(main_repo.path(), "feature-shared");
+
+        // Someone else pushes to the same branch; this clone does not fetch.
+        let other = TempDir::new().unwrap();
+        Command::new("git")
+            .args([
+                "clone",
+                "-q",
+                "-b",
+                "feature-shared",
+                bare.path().to_str().unwrap(),
+                other.path().to_str().unwrap(),
+            ])
+            .status()
+            .unwrap();
+        git(other.path(), &["config", "user.email", "o@t.com"]);
+        git(other.path(), &["config", "user.name", "O"]);
+        git(
+            other.path(),
+            &["commit", "-q", "--allow-empty", "-m", "theirs"],
+        );
+        git(other.path(), &["push", "-q", "origin", "feature-shared"]);
+
+        let mut projects = BTreeMap::new();
+        projects.insert(
+            "feature-shared".to_string(),
+            make_project(wt.path(), "feature-shared"),
+        );
+        let cx = make_context(main_repo.path(), work_dir.path(), projects);
+        let args = DoneArgs {
+            tag: Some("feature-shared".to_string()),
+            force: false,
+            keep_local: false,
+            keep_remote: false,
+        };
+        run(&args, &cx).expect("done should succeed");
+
+        let out = Command::new("git")
+            .args(["-C", bare.path().to_str().unwrap()])
+            .args(["rev-parse", "--verify", "-q", "refs/heads/feature-shared"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "the remote branch with someone else's commit must survive"
+        );
     }
 
     // AC2: dirty worktree → returns error mentioning --force
