@@ -120,6 +120,12 @@ fn snap_skips_unchanged_lanes_restores_and_prunes() {
 
     // Uncommitted work is what the snaps are for.
     std::fs::write(lane.join("a.txt"), "edited, not committed\n").unwrap();
+    // Below the headroom floor: no snap, a warning, no failure.
+    btrfs::TEST_FLOOR_GIB.with(|c| c.set(Some(1 << 30)));
+    run_at(&args, &cx, t0).unwrap();
+    assert!(list_snaps(&work_dir, "lane").is_empty());
+    btrfs::TEST_FLOOR_GIB.with(|c| c.set(Some(0)));
+    btrfs::create_subvolume(&lane.join(".scratch")).unwrap();
     run_at(&args, &cx, t0).unwrap();
     assert_eq!(list_snaps(&work_dir, "lane").len(), 1);
     run_at(&args, &cx, hours(1)).unwrap();
@@ -188,6 +194,10 @@ fn snap_skips_unchanged_lanes_restores_and_prunes() {
         .into_owned();
     run_restore(&cx, "lane", &second, None).unwrap();
     assert!(btrfs::is_subvolume(&lane));
+    assert!(
+        btrfs::is_subvolume(&lane.join(".scratch")),
+        "restored as a subvolume"
+    );
     assert_eq!(
         std::fs::read_to_string(lane.join("b.db")).unwrap(),
         "ignored output\n"

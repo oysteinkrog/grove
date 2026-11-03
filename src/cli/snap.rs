@@ -105,8 +105,15 @@ pub fn run_at(args: &SnapArgs, cx: &RepoContext, now: OffsetDateTime) -> Result<
     let work_dir = &cx.resolved.work_dir;
     let registry = crate::registry::Registry::load(&cx.grove_dir())?;
     let mut failures = 0;
+    // Below the floor `grove new` uses, no new snaps: each pins the build
+    // output written since the last one. Pruning below still runs, which
+    // frees space.
+    let room = btrfs::check_headroom(work_dir);
+    if let Err(e) = &room {
+        eprintln!("warning: no snaps this run: {e}");
+    }
     for (tag, project) in &registry.projects {
-        if !btrfs::is_subvolume(&project.path) {
+        if room.is_err() || !btrfs::is_subvolume(&project.path) {
             continue;
         }
         match snap_lane(work_dir, tag, &project.path, now, args.dry_run) {
@@ -298,6 +305,14 @@ pub fn run_restore(cx: &RepoContext, tag: &str, name: &str, file: Option<&Path>)
         std::fs::rename(&detached, aside.join(".git"))?;
         std::fs::rename(&aside, lane)?;
         bail!("{e}; the lane was left as it was");
+    }
+    // The snap holds only an empty placeholder for the lane's .scratch
+    // subvolume: make it a subvolume again, as every lane has.
+    if std::fs::read_dir(&scratch).is_ok_and(|mut d| d.next().is_none())
+        && !btrfs::is_subvolume(&scratch)
+    {
+        std::fs::remove_dir(&scratch)?;
+        btrfs::create_subvolume(&scratch).map_err(|e| anyhow!("{e}"))?;
     }
     // The index in the admin directory is the current one: refresh its stat
     // data so `git status` shows what the restore changed.

@@ -427,7 +427,7 @@ pub fn headroom_ok(room: Headroom, floor_gib: u64) -> Result<(), String> {
     if total < floor_gib << 30 {
         return Err(format!(
             "only {:.1} GiB unallocated plus {:.1} GiB free metadata, below the {floor_gib} GiB \
-             floor ({MIN_FREE_ENV}); free space before making lanes",
+             floor ({MIN_FREE_ENV}); free some space first",
             gib(room.unallocated),
             gib(room.metadata_free)
         ));
