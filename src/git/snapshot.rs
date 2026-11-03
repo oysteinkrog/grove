@@ -217,7 +217,7 @@ impl ShellBackend {
                 format!("{} already exists", target.display()),
             ));
         }
-        sweep_staging(staging);
+        sweep_staging(repo_path, staging);
         btrfs::check_headroom(parent).map_err(|e| failed("snapshot headroom", e))?;
 
         // The reset after the snapshot can rewrite many files when the source
@@ -236,9 +236,15 @@ impl ShellBackend {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let staged = staging.join(format!("{name}.{}", std::process::id()));
-        let result = self.fill_by_snapshot(source, target, &staged, &probe, source_lock);
+        // A record of the registration, so a run that dies from here on can
+        // be cleaned up by the next one (see `sweep_staging`).
+        let journal = journal_path(&staged);
+        let result = std::fs::write(&journal, format!("{}\n", target.display()))
+            .map_err(|e| failed(format!("write {}", journal.display()), e.to_string()))
+            .and_then(|_| self.fill_by_snapshot(source, target, &staged, &probe, source_lock));
         if let Err(e) = result {
             let cleanup = self.roll_back(repo_path, target, &staged);
+            let _ = std::fs::remove_file(&journal);
             drop(copy_lock);
             return Err(failed(
                 format!("snapshot {} -> {}", source.display(), target.display()),
@@ -247,6 +253,7 @@ impl ShellBackend {
                 ),
             ));
         }
+        let _ = std::fs::remove_file(&journal);
         drop(copy_lock);
         Ok(())
     }
@@ -295,8 +302,14 @@ impl ShellBackend {
 
         // 3. Point the copy at its own admin directory. Nothing has run in
         //    it yet.
-        let tmp = staged.join(".git.grove-new");
-        std::fs::write(&tmp, &gitfile)
+        // create_new: never write through a file or symlink of that name the
+        // source happened to have.
+        let tmp = staged.join(format!(".git.grove-new-{}", std::process::id()));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, gitfile.as_bytes()))
             .and_then(|_| std::fs::rename(&tmp, staged.join(".git")))
             .map_err(|e| failed(format!("write {}/.git", staged.display()), e.to_string()))?;
         fail_point("after-gitfile")?;
@@ -398,8 +411,14 @@ fn admin_dir_of(gitfile: &str, target: &Path) -> Result<PathBuf, GroveError> {
 /// it never carry nested worktrees.
 fn fix_nested_scratch(staged: &Path) -> Result<(), GroveError> {
     let scratch = staged.join(crate::cli::new::SCRATCH_DIR);
-    if !scratch.is_dir() {
-        return Ok(());
+    match std::fs::symlink_metadata(&scratch) {
+        Ok(m) if m.file_type().is_symlink() => {
+            // Never follow it: it may point at real worktrees. Drop the link.
+            return std::fs::remove_file(&scratch)
+                .map_err(|e| failed(format!("rm {}", scratch.display()), e.to_string()));
+        }
+        Ok(m) if m.is_dir() => {}
+        _ => return Ok(()),
     }
     remove_nested_gitfiles(&scratch)
         .map_err(|e| failed(format!("clean {}", scratch.display()), e.to_string()))?;
@@ -428,20 +447,69 @@ fn remove_nested_gitfiles(dir: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Delete staging entries left by grove runs that died (their pid is gone).
-fn sweep_staging(staging: &Path) {
+fn journal_path(staged: &Path) -> PathBuf {
+    let mut name = staged.file_name().unwrap_or_default().to_os_string();
+    name.push(".journal");
+    staged.with_file_name(name)
+}
+
+fn pid_alive(pid: u32) -> bool {
+    pid == std::process::id() || Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Clean up after grove runs that died (their pid is gone): delete their
+/// staged snapshots, and for each journal, the locked registration of a
+/// lane that never got its directory (only that one). A lane that did get
+/// its directory is unlocked and left for `grove gc` to report.
+fn sweep_staging(repo_path: &Path, staging: &Path) {
     let Ok(entries) = std::fs::read_dir(staging) else {
         return;
     };
-    for entry in entries.flatten() {
+    let entries: Vec<_> = entries.flatten().collect();
+    for entry in &entries {
         let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(stem) = name.strip_suffix(".journal") else {
+            continue;
+        };
+        let Some(pid) = stem
+            .rsplit_once('.')
+            .and_then(|(_, p)| p.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid_alive(pid) {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(entry.path()) {
+            let target = PathBuf::from(text.trim());
+            let backend = ShellBackend::new();
+            let t = target.to_str().unwrap_or_default();
+            if target.as_os_str().is_empty() {
+                // Nothing recorded.
+            } else if !target.exists() {
+                eprintln!(
+                    "Removing the registration of {}, left by an earlier grove run",
+                    target.display()
+                );
+                let _ = backend.run(repo_path, &["worktree", "remove", "--force", "--force", t]);
+            } else {
+                let _ = backend.run(repo_path, &["worktree", "unlock", t]);
+            }
+        }
+        let _ = std::fs::remove_file(entry.path());
+    }
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.ends_with(".journal") {
+            continue;
+        }
         let Some(pid) = name
             .rsplit_once('.')
             .and_then(|(_, p)| p.parse::<u32>().ok())
         else {
             continue;
         };
-        if pid == std::process::id() || Path::new(&format!("/proc/{pid}")).exists() {
+        if pid_alive(pid) {
             continue;
         }
         let path = entry.path();

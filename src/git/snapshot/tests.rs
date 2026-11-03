@@ -371,3 +371,43 @@ fn git_worktree_remove_deletes_a_subvolume_lane() {
     let list = git(&f.main, &["worktree", "list", "--porcelain"]);
     assert!(!list.contains(lane.to_str().unwrap()));
 }
+
+/// A run that died after registering the lane, before it had a directory,
+/// leaves a locked registration. The next run removes exactly that one.
+#[test]
+fn a_dead_runs_locked_registration_is_removed() {
+    let _on = On::new();
+    let Some(f) = fixture() else { return };
+    let dead = f.work_dir.join(".scratch").join("dead");
+    git(
+        &f.main,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--no-checkout",
+            "--lock",
+            "-b",
+            "dead",
+            dead.to_str().unwrap(),
+            "main",
+        ],
+    );
+    std::fs::remove_file(dead.join(".git")).unwrap();
+    std::fs::remove_dir(&dead).unwrap();
+    let staging = staging_dir(&f.work_dir);
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(
+        staging.join("dead.999999999.journal"),
+        format!("{}\n", dead.display()),
+    )
+    .unwrap();
+    // A live lane registered meanwhile is not touched.
+    let keep = f.work_dir.join(".scratch").join("keep");
+    make(&f, &keep, "keep", "main").unwrap();
+    let list = git(&f.main, &["worktree", "list", "--porcelain"]);
+    assert!(!list.contains(dead.to_str().unwrap()), "{list}");
+    assert!(list.contains(keep.to_str().unwrap()));
+    git(&f.main, &["rev-parse", "--verify", "dead"]);
+    assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+}
