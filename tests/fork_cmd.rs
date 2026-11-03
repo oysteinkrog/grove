@@ -658,3 +658,42 @@ fn fork_starts_at_the_source_checkout_not_the_registered_branch() {
         "edited, not committed\n"
     );
 }
+
+/// A source lane still on its registered branch is forked from the branch
+/// name, so `branch.autoSetupMerge=inherit` copies its upstream as before.
+#[test]
+fn fork_of_a_lane_on_its_branch_inherits_the_upstream() {
+    let (_bare, clone) = make_bare_and_clone("if");
+    let work_dir = TempDir::new().unwrap();
+    let grove_dir = work_dir.path().join(".grove");
+    let src = live_source_lane(clone.path(), work_dir.path());
+    git_out(&src, &["push", "-q", "-u", "origin", "feature"]);
+    git_out(
+        clone.path(),
+        &["config", "branch.autoSetupMerge", "inherit"],
+    );
+
+    let cx = make_context_with_project(
+        clone.path(),
+        work_dir.path(),
+        &grove_dir,
+        "if",
+        "src",
+        "feature",
+    );
+    let args = ForkArgs {
+        positionals: vec!["src".to_string(), "child".to_string()],
+        issue: None,
+        branch: None,
+        no_fetch: true,
+        ephemeral: false,
+        ttl: None,
+        copy_source: false,
+    };
+    run(&args, &cx).expect("fork should succeed");
+    let target = work_dir.path().join("child");
+    assert_eq!(
+        git_out(&target, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
+        "origin/feature"
+    );
+}

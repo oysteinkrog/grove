@@ -48,7 +48,7 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
     // Start at the commit the source lane has checked out, which may differ
     // from its registered branch (switched or detached). Fall back to the
     // registered branch when the source tree is gone.
-    let start_point = source_head(&source_project.path).unwrap_or_else(|| source_branch.clone());
+    let start_point = fork_start_point(&source_project.path, &source_branch);
     let source_base = source_project.base.clone();
 
     let new_branch = compute_branch_name(
@@ -166,6 +166,20 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Where the fork starts: the registered branch when the source lane still
+/// has it checked out (so git's branch.autoSetupMerge=inherit still copies
+/// its upstream, as before), else the commit the source has checked out, else
+/// the registered branch when the source tree is gone.
+fn fork_start_point(source: &std::path::Path, branch: &str) -> String {
+    let Some(head) = source_head(source) else {
+        return branch.to_string();
+    };
+    let on_branch = ShellBackend::new()
+        .run_stdout(source, &["symbolic-ref", "-q", "--short", "HEAD"])
+        .is_ok_and(|current| current == branch);
+    if on_branch { branch.to_string() } else { head }
 }
 
 /// The commit checked out in the worktree at `path`, if it is one.
