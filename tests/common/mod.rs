@@ -11,6 +11,21 @@ use grove::registry::Registry;
 use grove::registry::project::Project;
 use grove::repo::RepoContext;
 
+/// Point grove's machine lock at a directory of this test process, and turn
+/// the I/O pressure pause off, so tests never wait on (or block) a real grove
+/// command or depend on the machine's load. Call first in every test.
+pub fn isolate_machine_lock() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let dir = std::env::temp_dir().join(format!("grove-it-locks-{}", std::process::id()));
+        // SAFETY: set once, before this test's fixtures run any grove code.
+        unsafe {
+            std::env::set_var(grove::machine_lock::LOCK_DIR_ENV, dir);
+            std::env::set_var(grove::machine_lock::PRESSURE_ENV, "off");
+        }
+    });
+}
+
 pub struct GitFixture {
     pub temp_dir: TempDir,
     pub bare_path: PathBuf,
@@ -20,6 +35,7 @@ pub struct GitFixture {
 
 impl GitFixture {
     pub fn new() -> Self {
+        isolate_machine_lock();
         let temp_dir = TempDir::new().unwrap();
         let bare_path = temp_dir.path().join("bare.git");
         let main_path = temp_dir.path().join("main");

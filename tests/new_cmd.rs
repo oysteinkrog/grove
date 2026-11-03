@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
@@ -166,6 +169,7 @@ fn make_context(
 /// AC1: grove new <tag> --issue N creates branch <PREFIX>-N-<tag> from remote default, worktree at work_dir/<tag>
 #[test]
 fn new_with_issue_creates_branch_and_worktree() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir_path = work_dir.path().join(".grove");
@@ -215,6 +219,7 @@ fn new_with_issue_creates_branch_and_worktree() {
 /// AC2: no --issue and no --branch → branch name equals tag
 #[test]
 fn new_no_issue_no_branch_uses_tag_as_branch() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir_path = work_dir.path().join(".grove");
@@ -254,6 +259,7 @@ fn new_no_issue_no_branch_uses_tag_as_branch() {
 /// AC6: tag already exists in registry → error indicates duplicate with existing path
 #[test]
 fn new_duplicate_tag_returns_error() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir_path = work_dir.path().join(".grove");
@@ -315,6 +321,7 @@ fn new_duplicate_tag_returns_error() {
 /// when `--ttl` is omitted).
 #[test]
 fn new_ephemeral_lands_under_scratch_with_default_ttl() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir_path = work_dir.path().join(".grove");
@@ -365,6 +372,7 @@ fn new_ephemeral_lands_under_scratch_with_default_ttl() {
 /// bd-grove-lifecycle-p0ur.6 AC: an explicit `--ttl` overrides the 14d default.
 #[test]
 fn new_ephemeral_with_explicit_ttl() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir_path = work_dir.path().join(".grove");
@@ -408,6 +416,7 @@ fn new_ephemeral_with_explicit_ttl() {
 /// A plain (non-ephemeral) `grove new` never sets `expires_at`.
 #[test]
 fn new_non_ephemeral_has_no_expiry() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir_path = work_dir.path().join(".grove");

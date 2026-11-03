@@ -14,6 +14,7 @@ use common::GitFixture;
 /// Each step verifies registry state and on-disk presence.
 #[test]
 fn phase3_full_lifecycle() {
+    common::isolate_machine_lock();
     let fx = GitFixture::new().with_grove_registry();
     let work_dir = fx.temp_dir.path().to_path_buf();
     let grove_dir = fx.grove_dir.clone();

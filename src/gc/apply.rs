@@ -81,6 +81,9 @@ fn remove_tree(
     // One lane delete at a time machine-wide, and none while I/O pressure is
     // high: a big lane delete is as heavy as a big copy. Taken before the
     // guards run, so they see the tree as it is when the delete starts.
+    // Checked first too, so gc does not wait for a lane that is no longer
+    // eligible.
+    still_eligible(finding, grove_dir, tag)?;
     let delete_lock =
         crate::machine_lock::acquire_paced("delete", &crate::machine_lock::tag_of(path))?;
 

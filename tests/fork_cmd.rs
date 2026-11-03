@@ -1,3 +1,6 @@
+#[allow(dead_code)]
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
@@ -179,6 +182,7 @@ fn make_context_with_project(
 /// AC1: 2 positionals — source and new tag both explicit.
 #[test]
 fn fork_two_positionals_explicit_source() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir = work_dir.path().join(".grove");
@@ -241,6 +245,7 @@ fn fork_two_positionals_explicit_source() {
 #[test]
 #[serial_test::serial]
 fn fork_one_positional_infers_source_from_cwd() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir = work_dir.path().join(".grove");
@@ -305,6 +310,7 @@ fn fork_one_positional_infers_source_from_cwd() {
 #[test]
 #[serial_test::serial]
 fn fork_one_positional_cwd_outside_project_errors() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir = work_dir.path().join(".grove");
@@ -350,6 +356,7 @@ fn fork_one_positional_cwd_outside_project_errors() {
 /// AC4: 3+ positionals → handler returns an error (usage error).
 #[test]
 fn fork_three_positionals_returns_error() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir = work_dir.path().join(".grove");
@@ -385,6 +392,7 @@ fn fork_three_positionals_returns_error() {
 /// worktree under `.scratch/` and registers an expiry, same as `grove new`.
 #[test]
 fn fork_ephemeral_lands_under_scratch_with_expiry() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir = work_dir.path().join(".grove");
@@ -516,6 +524,7 @@ fn live_source_lane(clone: &Path, work_dir: &Path) -> std::path::PathBuf {
 /// HEAD and none of its untracked, ignored or build files.
 #[test]
 fn fork_from_base_has_source_head_and_no_local_files() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir = work_dir.path().join(".grove");
@@ -574,6 +583,7 @@ fn fork_from_base_has_source_head_and_no_local_files() {
 /// still dropped.
 #[test]
 fn fork_copy_source_keeps_build_output() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir = work_dir.path().join(".grove");
@@ -624,6 +634,7 @@ fn fork_copy_source_keeps_build_output() {
 /// commit) is forked at the commit it has checked out.
 #[test]
 fn fork_starts_at_the_source_checkout_not_the_registered_branch() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir = work_dir.path().join(".grove");
@@ -663,6 +674,7 @@ fn fork_starts_at_the_source_checkout_not_the_registered_branch() {
 /// name, so `branch.autoSetupMerge=inherit` copies its upstream as before.
 #[test]
 fn fork_of_a_lane_on_its_branch_inherits_the_upstream() {
+    common::isolate_machine_lock();
     let (_bare, clone) = make_bare_and_clone("if");
     let work_dir = TempDir::new().unwrap();
     let grove_dir = work_dir.path().join(".grove");

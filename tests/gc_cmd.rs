@@ -7,6 +7,9 @@
 //! in-use) each get their own case, because they are the only thing standing
 //! between gc and somebody's unfinished work.
 
+#[allow(dead_code)]
+mod common;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -218,6 +221,7 @@ fn find<'a>(plan: &'a GcPlan, category: Category, label: &str) -> &'a Finding {
 
 #[test]
 fn streaming_reports_every_category_once_and_in_order() {
+    common::isolate_machine_lock();
     // What makes the report arrive during the scan instead of after it. Every
     // category must fire, including the ones that find nothing: a category that
     // stays silent is exactly how a long scan came to look like a hang.
@@ -243,6 +247,7 @@ fn streaming_reports_every_category_once_and_in_order() {
 
 #[test]
 fn streamed_findings_match_the_finished_plan() {
+    common::isolate_machine_lock();
     // The callback sees the plan as it grows. By the time a category has fired,
     // that category's findings must already be complete, or a streamed report
     // would print a category with fewer findings than the final one has.
@@ -281,6 +286,7 @@ fn streamed_findings_match_the_finished_plan() {
 
 #[test]
 fn concurrent_and_serial_scans_of_the_same_work_dir_agree() {
+    common::isolate_machine_lock();
     // Categories 3 and 4 moved onto the shared thread pool. Their findings must
     // not depend on how many threads ran them, order included: the report is
     // compared between runs by hand often enough for stability to matter.
@@ -329,6 +335,7 @@ fn concurrent_and_serial_scans_of_the_same_work_dir_agree() {
 
 #[test]
 fn registry_entry_whose_directory_vanished_is_found_and_dropped() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let wt = fx.worktree("wt-gone", "feature/gone");
     let mut projects = BTreeMap::new();
@@ -364,6 +371,7 @@ fn registry_entry_whose_directory_vanished_is_found_and_dropped() {
 
 #[test]
 fn unregistered_worktree_is_reported_and_never_auto_applied() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     fx.worktree("wt-orphan", "feature/orphan");
     fx.save_registry(BTreeMap::new());
@@ -388,6 +396,7 @@ fn unregistered_worktree_is_reported_and_never_auto_applied() {
 
 #[test]
 fn a_registered_worktree_is_not_reported_as_unregistered() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let wt = fx.worktree("wt-known", "feature/known");
     let mut projects = BTreeMap::new();
@@ -400,6 +409,7 @@ fn a_registered_worktree_is_not_reported_as_unregistered() {
 
 #[test]
 fn dirty_unregistered_worktree_carries_its_blocker() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let wt = fx.worktree("wt-dirty", "feature/dirty");
     std::fs::write(wt.join("notes.md"), b"unsaved thinking").unwrap();
@@ -418,6 +428,7 @@ fn dirty_unregistered_worktree_carries_its_blocker() {
 
 #[test]
 fn foreign_directories_are_listed_and_never_touched() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     fx.worktree("wt-real", "feature/real");
     std::fs::create_dir_all(fx.work_dir.join("support-articles/docs")).unwrap();
@@ -460,6 +471,7 @@ fn foreign_directories_are_listed_and_never_touched() {
 
 #[test]
 fn dot_directories_are_left_out_of_the_foreign_scan() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     std::fs::create_dir_all(fx.work_dir.join(".scratch/probe")).unwrap();
     std::fs::create_dir_all(fx.work_dir.join(".archive")).unwrap();
@@ -479,6 +491,7 @@ fn dot_directories_are_left_out_of_the_foreign_scan() {
 
 #[test]
 fn expired_clean_ephemeral_is_removed_and_its_branch_logged() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let wt = fx.worktree_at(&fx.work_dir.join(".scratch/probe"), "scratch/probe");
     let head = String::from_utf8(
@@ -526,6 +539,7 @@ fn expired_clean_ephemeral_is_removed_and_its_branch_logged() {
 
 #[test]
 fn expired_but_dirty_ephemeral_is_reported_and_never_removed() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let wt = fx.worktree_at(&fx.work_dir.join(".scratch/wip"), "scratch/wip");
     std::fs::write(wt.join("half-finished.rs"), b"fn main() {}").unwrap();
@@ -558,6 +572,7 @@ fn expired_but_dirty_ephemeral_is_reported_and_never_removed() {
 
 #[test]
 fn expired_ephemeral_with_unpushed_commits_is_blocked() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let wt = fx.worktree_at(&fx.work_dir.join(".scratch/ahead"), "scratch/ahead");
     commit(&wt, "new.rs", "work that only exists here");
@@ -588,6 +603,7 @@ fn expired_ephemeral_with_unpushed_commits_is_blocked() {
 
 #[test]
 fn unexpired_ephemeral_is_not_a_finding() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let wt = fx.worktree_at(&fx.work_dir.join(".scratch/fresh"), "scratch/fresh");
     let mut projects = BTreeMap::new();
@@ -610,6 +626,7 @@ fn unexpired_ephemeral_is_not_a_finding() {
 
 #[test]
 fn unregistered_scratch_clone_past_the_ttl_is_collectable() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let scratch = fx.work_dir.join(".scratch");
     std::fs::create_dir_all(&scratch).unwrap();
@@ -639,6 +656,7 @@ fn unregistered_scratch_clone_past_the_ttl_is_collectable() {
 
 #[test]
 fn non_git_scratch_directory_is_reported_but_not_removed() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let junk = fx.work_dir.join(".scratch/notes");
     std::fs::create_dir_all(&junk).unwrap();
@@ -659,6 +677,7 @@ fn non_git_scratch_directory_is_reported_but_not_removed() {
 
 #[test]
 fn stale_harness_worktree_is_removed_and_not_confused_with_category_two() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let harness = fx.layout().harness_dir().join("agent-a139da4b436e8c126");
     fx.worktree_at(&harness, "agent/a139da4b436e8c126");
@@ -680,6 +699,7 @@ fn stale_harness_worktree_is_removed_and_not_confused_with_category_two() {
 
 #[test]
 fn fresh_harness_worktree_is_left_for_its_live_session() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let harness = fx.layout().harness_dir().join("agent-ad56e26e5abdfbcf0");
     fx.worktree_at(&harness, "agent/ad56e26e5abdfbcf0");
@@ -702,6 +722,7 @@ fn fresh_harness_worktree_is_left_for_its_live_session() {
 
 #[test]
 fn a_harness_worktree_in_use_survives_even_when_stale() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let harness = fx.layout().harness_dir().join("agent-busy");
     fx.worktree_at(&harness, "agent/busy");
@@ -728,6 +749,7 @@ fn a_harness_worktree_in_use_survives_even_when_stale() {
 
 #[test]
 fn prunable_worktree_metadata_is_found_and_pruned() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let wt = fx.worktree("wt-vanished", "feature/vanished");
     fx.save_registry(BTreeMap::new());
@@ -756,6 +778,7 @@ fn prunable_worktree_metadata_is_found_and_pruned() {
 
 #[test]
 fn merged_and_clean_project_is_listed_as_a_done_candidate() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let wt = fx.worktree("wt-landed", "feature/landed");
     let mut projects = BTreeMap::new();
@@ -783,6 +806,7 @@ fn merged_and_clean_project_is_listed_as_a_done_candidate() {
 
 #[test]
 fn project_with_work_the_base_lacks_is_not_a_done_candidate() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let wt = fx.worktree("wt-ahead", "feature/ahead");
     commit(&wt, "feature.rs", "a change nobody upstream has");
@@ -799,6 +823,7 @@ fn project_with_work_the_base_lacks_is_not_a_done_candidate() {
 
 #[test]
 fn merged_work_that_landed_under_a_new_sha_is_still_recognised() {
+    common::isolate_machine_lock();
     // Mergify rebases, so the landed commit is not an ancestor of anything in
     // the worktree. Patch-id matching is what has to catch this.
     let fx = Fixture::new();
@@ -832,6 +857,7 @@ fn merged_work_that_landed_under_a_new_sha_is_still_recognised() {
 
 #[test]
 fn a_long_rebased_branch_is_still_recognised_as_merged() {
+    common::isolate_machine_lock();
     // The shape that made the audit necessary: a branch whose commits all
     // landed upstream under new SHAs, so `rev-list --count base..HEAD` reads
     // high while every patch-id is in fact already in the base. Gating the
@@ -876,6 +902,7 @@ fn a_long_rebased_branch_is_still_recognised_as_merged() {
 
 #[test]
 fn dirty_project_is_not_a_done_candidate_however_merged() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let wt = fx.worktree("wt-busy", "feature/busy");
     std::fs::write(wt.join("scratch.txt"), b"mid-edit").unwrap();
@@ -891,6 +918,7 @@ fn dirty_project_is_not_a_done_candidate_however_merged() {
 
 #[test]
 fn yes_touches_only_the_four_bookkeeping_categories() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
 
     // One finding in each of the eight categories, as far as a fixture allows.
@@ -959,6 +987,7 @@ fn yes_touches_only_the_four_bookkeeping_categories() {
 
 #[test]
 fn a_second_run_after_applying_reports_the_advisory_categories_only() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let gone = fx.worktree("wt-gone", "feature/gone");
     let mut projects = BTreeMap::new();
@@ -984,6 +1013,7 @@ fn a_second_run_after_applying_reports_the_advisory_categories_only() {
 
 #[test]
 fn a_concurrent_scan_reports_the_same_thing_a_serial_one_does() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     for n in 1..=6 {
         fx.worktree(&format!("wt-{n}"), &format!("feature/{n}"));
@@ -1025,6 +1055,7 @@ fn a_concurrent_scan_reports_the_same_thing_a_serial_one_does() {
 
 #[test]
 fn inspecting_a_tree_does_not_make_it_look_recently_used() {
+    common::isolate_machine_lock();
     // `git status` normally refreshes the on-disk index, which bumps the very
     // mtime the liveness guard reads. Left unchecked, gc's own inspection would
     // mark every tree it looked at as a live session — and blocked findings look
@@ -1046,6 +1077,7 @@ fn inspecting_a_tree_does_not_make_it_look_recently_used() {
 
 #[test]
 fn liveness_uses_the_timestamp_it_was_given_not_a_fresh_reading() {
+    common::isolate_machine_lock();
     // The other half of the same defence: the scanners sample activity before
     // touching a tree and hand it to the guard, so even a git command that did
     // write could not fake a live session.
@@ -1069,6 +1101,7 @@ fn liveness_uses_the_timestamp_it_was_given_not_a_fresh_reading() {
 
 #[test]
 fn scanning_survives_a_worktree_it_cannot_read() {
+    common::isolate_machine_lock();
     let fx = Fixture::new();
     let mut projects = BTreeMap::new();
     projects.insert(

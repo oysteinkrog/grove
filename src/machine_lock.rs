@@ -219,6 +219,10 @@ pub fn tag_of(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// `GROVE_IO_PRESSURE=off` turns the pressure pause of batch deletes off
+/// (tests use it; so can someone who must run gc during a long build).
+pub const PRESSURE_ENV: &str = "GROVE_IO_PRESSURE";
+
 /// Batch deletes wait while "some avg10" in `/proc/pressure/io` is at or
 /// above this (percent of time at least one task stalled on I/O).
 pub const DELETE_IO_PRESSURE_LIMIT: f64 = 5.0;
@@ -237,7 +241,10 @@ pub fn parse_io_some_avg10(text: &str) -> Option<f64> {
 /// The current I/O pressure, or `None` where there is none to read (not
 /// Linux, or a kernel without PSI).
 pub fn io_pressure() -> Option<f64> {
-    if !cfg!(target_os = "linux") {
+    if !cfg!(target_os = "linux")
+        || cfg!(test)
+        || std::env::var(PRESSURE_ENV).is_ok_and(|v| v == "off")
+    {
         return None;
     }
     parse_io_some_avg10(&std::fs::read_to_string("/proc/pressure/io").ok()?)
@@ -336,9 +343,9 @@ pub fn acquire_paced_with(
     // Only time spent waiting for quiet I/O counts against `max_wait`, not
     // time spent waiting for the lock behind another command.
     let mut waited = *used;
+    let mut last_report: Option<Duration> = None;
     let result = loop {
         let left = max_wait.saturating_sub(waited);
-        let mut last_report: Option<Duration> = None;
         let outcome = wait_for_quiet_io(
             &mut read,
             |d| {
