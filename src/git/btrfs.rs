@@ -228,6 +228,21 @@ pub const RM_ALLOWED_ENV: &str = "GROVE_SUBVOL_RM_ALLOWED";
 /// True when `user_subvol_rm_allowed` is set on the filesystem holding
 /// `path`. `GROVE_SUBVOL_RM_ALLOWED=0` makes it false.
 pub fn rm_allowed(path: &Path) -> bool {
+    #[cfg(test)]
+    if let Some(v) = TEST_RM_ALLOWED.with(|f| f.get()) {
+        return v && mountinfo_allows(path);
+    }
+    mountinfo_allows(path)
+}
+
+// Test hook: force the slow delete for this thread only (`Some(false)`).
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_RM_ALLOWED: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn mountinfo_allows(path: &Path) -> bool {
     if std::env::var(RM_ALLOWED_ENV).is_ok_and(|v| v == "0") {
         return false;
     }
@@ -302,20 +317,25 @@ pub fn delete_subvolume(path: &Path, nested: &[PathBuf]) -> Result<Deleted, Btrf
             path.display()
         )));
     }
+    // An unprivileged delete of a read-only subvolume fails with EROFS on
+    // both paths; its owner may clear the flag first.
+    if subvol_info(path).is_ok_and(|i| i.readonly) {
+        set_writable(path)?;
+    }
     if rm_allowed(path) {
-        for inner in nested.iter().filter(|p| is_subvolume(p)) {
-            btrfs(&["subvolume".as_ref(), "delete".as_ref(), inner.as_os_str()])?;
-        }
-        match btrfs(&["subvolume".as_ref(), "delete".as_ref(), path.as_os_str()]) {
+        let delete = |p: &Path| btrfs(&["subvolume".as_ref(), "delete".as_ref(), p.as_os_str()]);
+        let fast = nested
+            .iter()
+            .filter(|p| is_subvolume(p))
+            .try_for_each(|p| delete(p))
+            .and_then(|_| delete(path));
+        match fast {
             Ok(()) => return Ok(Deleted::Fast),
-            // A nested subvolume grove did not make: fall through to the
+            // A nested subvolume grove did not list: fall through to the
             // slow path, which removes those with rmdir as it meets them.
             Err(BtrfsError::Failed(m)) if m.contains("not empty") => {}
             Err(e) => return Err(e),
         }
-    }
-    if subvol_info(path).is_ok_and(|i| i.readonly) {
-        set_writable(path)?;
     }
     std::fs::remove_dir_all(path)
         .map_err(|e| BtrfsError::Failed(format!("remove {}: {e}", path.display())))?;
@@ -505,11 +525,19 @@ pub(crate) mod tests {
         snapshot(&sv, &ro, true).unwrap();
         assert!(subvol_info(&ro).unwrap().readonly);
 
+        let expected = if rm_allowed(tmp.path()) {
+            Deleted::Fast
+        } else {
+            Deleted::FileByFile
+        };
         for p in [&ro, &snap] {
-            delete_subvolume(p, &[]).unwrap();
+            assert_eq!(delete_subvolume(p, &[]).unwrap(), expected);
             assert!(!p.exists());
         }
-        delete_subvolume(&sv, &[sv.join("nested")]).unwrap();
+        assert_eq!(
+            delete_subvolume(&sv, &[sv.join("nested")]).unwrap(),
+            expected
+        );
         assert!(!sv.exists());
         assert!(delete_subvolume(&sv, &[]).is_err());
     }

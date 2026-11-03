@@ -184,4 +184,39 @@ fn new_and_fork_make_snapshot_lanes() {
     assert_eq!(git(&lane1, &["rev-parse", "HEAD"]), lane1_head);
     assert_eq!(git(&lane1, &["status", "--porcelain"]), "");
     assert_eq!(git(&lane1, &["branch", "--show-current"]), "lane1");
+
+    // done on snapshot lanes. With user_subvol_rm_allowed the lane goes with
+    // `btrfs subvolume delete`: a directory the user cannot write proves it,
+    // since unlinking file by file would fail there.
+    if btrfs::rm_allowed(&work_dir) {
+        use std::os::unix::fs::PermissionsExt;
+        let ro = cold.join("build");
+        std::fs::create_dir_all(&ro).unwrap();
+        std::fs::write(ro.join("out.bin"), "x").unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let done = |tag: &str, force: bool| {
+            grove::cli::done::run(
+                &grove::cli::done::DoneArgs {
+                    tag: Some(tag.to_string()),
+                    force,
+                    keep_local: true,
+                    keep_remote: true,
+                },
+                &context(&main, &work_dir),
+            )
+        };
+        // cold is at lane1's unpushed commit: refused without --force.
+        assert!(done("cold", false).is_err());
+        assert!(cold.exists());
+        done("cold", true).unwrap();
+        assert!(!cold.exists());
+        let list = git(&main, &["worktree", "list", "--porcelain"]);
+        assert!(!list.contains(cold.to_str().unwrap()), "{list}");
+        assert!(list.contains(warm.to_str().unwrap()));
+        let registry = Registry::load(&work_dir.join(".grove")).unwrap();
+        assert!(!registry.projects.contains_key("cold"));
+        assert!(registry.projects.contains_key("warm"));
+    } else {
+        eprintln!("user_subvol_rm_allowed is not set: fast done not tested");
+    }
 }

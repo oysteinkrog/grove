@@ -664,4 +664,66 @@ mod tests {
         assert!(err.contains("git refused"), "{err}");
         assert!(linked.exists());
     }
+
+    /// With user_subvol_rm_allowed, gc removes a subvolume lane with
+    /// `btrfs subvolume delete`. A directory the user cannot write proves it:
+    /// unlinking file by file would fail there.
+    #[test]
+    fn gc_deletes_a_subvolume_lane_at_once() {
+        use crate::git::btrfs;
+        use std::os::unix::fs::PermissionsExt;
+        let Some(tmp) = btrfs::tests::btrfs_scratch() else {
+            return;
+        };
+        if !btrfs::rm_allowed(tmp.path()) {
+            eprintln!("skipping: user_subvol_rm_allowed is not set");
+            return;
+        }
+        let main = tmp.path().join("master");
+        std::fs::create_dir_all(&main).unwrap();
+        git_in(&main, &["init", "-q", "-b", "main"]);
+        std::fs::write(main.join(".gitignore"), "ro/\n").unwrap();
+        git_in(&main, &["add", "."]);
+        git_in(
+            &main,
+            &[
+                "-c",
+                "user.email=t@e",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "-m",
+                "one",
+            ],
+        );
+        let lane = tmp.path().join(".scratch").join("lane");
+        std::fs::create_dir_all(lane.parent().unwrap()).unwrap();
+        btrfs::create_subvolume(&lane).unwrap();
+        git_in(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "lane",
+                lane.to_str().unwrap(),
+                "main",
+            ],
+        );
+        btrfs::create_subvolume(&lane.join(".scratch")).unwrap();
+        std::fs::create_dir_all(lane.join("ro")).unwrap();
+        std::fs::write(lane.join("ro/out.bin"), "x").unwrap();
+        std::fs::set_permissions(lane.join("ro"), std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let layout = Layout {
+            work_dir: tmp.path().to_path_buf(),
+            main_repo: main.clone(),
+        };
+        remove_worktree_dir(&layout, &lane).unwrap();
+        assert!(!lane.exists());
+        let list = git_in(&main, &["worktree", "list", "--porcelain"]);
+        assert!(!list.contains(lane.to_str().unwrap()), "{list}");
+    }
 }
