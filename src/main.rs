@@ -196,6 +196,14 @@ fn dispatch(cli: Cli, config_dir: &std::path::Path) -> anyhow::Result<()> {
             grove::cli::rename::run(&args, &cx).map_err(Into::into)
         }
 
+        Command::Snap { cmd, dry_run } => match cmd {
+            None => grove::cli::snap::run(&grove::cli::snap::SnapArgs { dry_run }, &cx),
+            Some(grove::cli::SnapCmd::List { tag }) => grove::cli::snap::run_list(&cx, &tag),
+            Some(grove::cli::SnapCmd::Restore { tag, snap, file }) => {
+                grove::cli::snap::run_restore(&cx, &tag, &snap, file.as_deref())
+            }
+        },
+
         Command::Freeze { tag } => {
             let args = grove::cli::freeze::FreezeArgs { tag: Some(tag) };
             grove::cli::freeze::run_freeze(&args, &cx)

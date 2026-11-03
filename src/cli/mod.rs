@@ -11,6 +11,7 @@ pub mod new;
 pub mod path;
 pub mod rename;
 pub mod repo;
+pub mod snap;
 pub mod status;
 pub mod who;
 
@@ -44,6 +45,22 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+#[derive(clap::Subcommand, Debug)]
+pub enum SnapCmd {
+    /// List the snaps of a lane, oldest first
+    List { tag: String },
+    /// Restore a lane, or one file of it, from a snap. The current lane or
+    /// file is moved aside first, never overwritten.
+    Restore {
+        tag: String,
+        /// The snap's name (its UTC time) as `grove snap list` prints it
+        snap: String,
+        /// One file, relative to the lane, instead of the whole lane
+        #[arg(long)]
+        file: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -132,6 +149,14 @@ pub enum Command {
         new: String,
         #[arg(long)]
         no_move: bool,
+    },
+    /// Read-only snapshots of lanes that are btrfs subvolumes (for a timer)
+    Snap {
+        #[command(subcommand)]
+        cmd: Option<SnapCmd>,
+        /// Print what would be snapped and deleted, change nothing
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Exclude a project from grove launch
     Freeze { tag: String },
