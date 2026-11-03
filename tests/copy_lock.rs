@@ -2,6 +2,7 @@
 //! lock one after the other. Each repo has its own base lock, so only the
 //! machine-wide lock can make them wait for each other.
 
+#[allow(dead_code)]
 mod common;
 
 use std::collections::BTreeMap;
