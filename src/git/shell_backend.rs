@@ -211,8 +211,9 @@ impl ShellBackend {
             }
         }
         // One whole-tree copy at a time on this machine: several at once
-        // froze the desktop. Held for the file copy and the index copy only,
-        // not for the reset and clean below.
+        // froze the desktop. Held through the reset and clean below as well:
+        // when the base is old, the reset to the lane's commit can rewrite
+        // many files, which is the same metadata load.
         let copy_lock =
             crate::machine_lock::MachineLock::acquire("copy", &crate::machine_lock::tag_of(target));
 
@@ -257,7 +258,6 @@ impl ShellBackend {
         }
 
         // Everything needed from `source` is copied; let others use it.
-        drop(copy_lock);
         drop(source_lock);
 
         // The copied index still holds the inode and ctime of the source files,
@@ -269,6 +269,7 @@ impl ShellBackend {
         let _ = self.run(target, &["update-index", "-q", "--refresh"]);
         self.run(target, &["reset", "--hard", "-q", "HEAD"])?;
         self.run(target, &["clean", "-fdq"])?;
+        drop(copy_lock);
         Ok(())
     }
 }
