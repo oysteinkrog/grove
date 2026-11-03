@@ -101,6 +101,19 @@ impl Registry {
         Ok(registry)
     }
 
+    /// Remove one project from the registry file. Holds `registry.lock` and
+    /// reads the file again first, so an entry another grove command added
+    /// since this one started is kept. Returns the removed project.
+    pub fn remove_on_disk(grove_dir: &Path, tag: &str) -> Result<Project, RegistryError> {
+        fs::create_dir_all(grove_dir)?;
+        let lock = fs::File::create(grove_dir.join("registry.lock"))?;
+        lock.lock()?;
+        let mut registry = Self::load(grove_dir)?;
+        let project = registry.remove(tag)?;
+        registry.save(grove_dir)?;
+        Ok(project)
+    }
+
     pub fn remove(&mut self, tag: &str) -> Result<Project, RegistryError> {
         self.projects
             .remove(tag)

@@ -48,8 +48,22 @@ fn resolve_tag(args: &DoneArgs, cx: &RepoContext) -> Result<String> {
 pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
     let tag = resolve_tag(args, cx)?;
 
-    let project = cx
-        .registry
+    // A single interactive delete runs at once, without the pressure pause
+    // gc uses, but still one at a time with other copies and deletes. Taken
+    // before the safety checks, so a lane that changes while this waits is
+    // checked as it is when the delete starts.
+    let delete_lock = crate::machine_lock::MachineLock::acquire("delete", &tag).map_err(|e| {
+        GroveError::GitCommandFailed {
+            cmd: "take the grove machine lock".to_string(),
+            stderr: e,
+        }
+    })?;
+
+    // Read the registry again: another grove command may have changed it
+    // while this one waited for the lock.
+    let registry = crate::registry::Registry::load(&cx.grove_dir())
+        .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
+    let project = registry
         .projects
         .get(&tag)
         .ok_or_else(|| GroveError::WorktreeNotFound(std::path::PathBuf::from(&tag)))?;
@@ -89,9 +103,6 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
         }
     }
 
-    // A single interactive delete runs at once, without the pressure pause
-    // gc uses, but still one at a time with other copies and deletes.
-    let delete_lock = crate::machine_lock::MachineLock::acquire("delete", &tag);
     backend.worktree_remove(&cx.resolved.main_repo, &worktree_path, args.force)?;
     drop(delete_lock);
 
@@ -106,12 +117,9 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
             backend.remote_branch_delete(&cx.resolved.main_repo, &cx.resolved.fork_remote, &branch);
     }
 
-    let mut registry = cx.registry.clone();
-    registry
-        .remove(&tag)
-        .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
-    registry
-        .save(&cx.grove_dir())
+    // Remove only this entry from the registry as it is on disk now, so
+    // lanes registered while this ran are kept.
+    crate::registry::Registry::remove_on_disk(&cx.grove_dir(), &tag)
         .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
     crate::events::record(&event);
 
@@ -286,6 +294,84 @@ mod tests {
         assert!(
             !loaded.projects.contains_key("feature-clean"),
             "registry entry should be removed"
+        );
+    }
+
+    /// `done` checks the lane only once it holds the machine lock: a commit
+    /// made while it waited for the lock is seen and blocks the delete.
+    #[test]
+    fn checks_run_after_the_lock_is_taken() {
+        let (_bare, main_repo) = init_bare_and_clone();
+        let work_dir = TempDir::new().unwrap();
+        let wt = make_worktree_on_branch(main_repo.path(), "feature-late");
+        let mut projects = BTreeMap::new();
+        projects.insert(
+            "feature-late".to_string(),
+            make_project(wt.path(), "feature-late"),
+        );
+        let cx = make_context(main_repo.path(), work_dir.path(), projects);
+
+        let lane = wt.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let lock = crate::machine_lock::MachineLock::acquire("copy", "other").unwrap();
+            tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            std::fs::write(lane.join("late.txt"), b"late").unwrap();
+            git(&lane, &["add", "late.txt"]);
+            git(&lane, &["commit", "-q", "-m", "late work"]);
+            drop(lock);
+        });
+        rx.recv().unwrap();
+
+        let args = DoneArgs {
+            tag: Some("feature-late".to_string()),
+            force: false,
+            keep_local: false,
+            keep_remote: false,
+        };
+        let result = run(&args, &cx);
+        holder.join().unwrap();
+        assert!(
+            matches!(result, Err(GroveError::UnpushedCommits { .. })),
+            "the commit made while done waited must block it, got {result:?}"
+        );
+        assert!(wt.path().join("late.txt").exists());
+    }
+
+    /// `done` removes only its own entry from the registry on disk, keeping
+    /// a lane another command registered after this one loaded the registry.
+    #[test]
+    fn keeps_entries_registered_meanwhile() {
+        let (_bare, main_repo) = init_bare_and_clone();
+        let work_dir = TempDir::new().unwrap();
+        let wt = make_worktree_on_branch(main_repo.path(), "feature-gone");
+        let mut projects = BTreeMap::new();
+        projects.insert(
+            "feature-gone".to_string(),
+            make_project(wt.path(), "feature-gone"),
+        );
+        let cx = make_context(main_repo.path(), work_dir.path(), projects);
+        let grove_dir = work_dir.path().join(".grove");
+        Registry::insert_on_disk(
+            &grove_dir,
+            "newcomer".to_string(),
+            make_project(&work_dir.path().join("newcomer"), "newcomer"),
+        )
+        .unwrap();
+
+        let args = DoneArgs {
+            tag: Some("feature-gone".to_string()),
+            force: false,
+            keep_local: false,
+            keep_remote: false,
+        };
+        run(&args, &cx).expect("done should succeed");
+        let loaded = Registry::load(&grove_dir).unwrap();
+        assert!(!loaded.projects.contains_key("feature-gone"));
+        assert!(
+            loaded.projects.contains_key("newcomer"),
+            "an entry added while done ran must be kept"
         );
     }
 
