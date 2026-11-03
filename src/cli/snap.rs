@@ -311,8 +311,17 @@ pub fn run_restore(cx: &RepoContext, tag: &str, name: &str, file: Option<&Path>)
     if std::fs::read_dir(&scratch).is_ok_and(|mut d| d.next().is_none())
         && !btrfs::is_subvolume(&scratch)
     {
-        std::fs::remove_dir(&scratch)?;
-        btrfs::create_subvolume(&scratch).map_err(|e| anyhow!("{e}"))?;
+        // The restore itself is done: a failure here is a warning, not a
+        // reason to report the restore as failed with the lane replaced.
+        let made = std::fs::remove_dir(&scratch)
+            .map_err(|e| e.to_string())
+            .and_then(|_| btrfs::create_subvolume(&scratch).map_err(|e| e.to_string()));
+        if let Err(e) = made {
+            eprintln!(
+                "warning: could not make {} a subvolume again: {e}",
+                scratch.display()
+            );
+        }
     }
     // The index in the admin directory is the current one: refresh its stat
     // data so `git status` shows what the restore changed.
