@@ -94,15 +94,15 @@ fn failed(cmd: impl Into<String>, stderr: impl Into<String>) -> GroveError {
     }
 }
 
-/// Test hook: fail at a named step.
+// Test hook: fail at a named step.
 #[cfg(test)]
 thread_local! {
     pub(crate) static FAIL_AT: std::cell::Cell<Option<&'static str>> =
         const { std::cell::Cell::new(None) };
 }
 
-/// Test hook: turn snapshots on or off for this thread only, without
-/// touching the environment other tests read.
+// Test hook: turn snapshots on or off for this thread only, without
+// touching the environment other tests read.
 #[cfg(test)]
 thread_local! {
     pub(crate) static FORCE_ENABLED: std::cell::Cell<Option<bool>> =

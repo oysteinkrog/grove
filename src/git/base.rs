@@ -167,6 +167,15 @@ impl ShellBackend {
 
         let lock = lock_base(base)?;
 
+        // With snapshot lanes on, the base is a subvolume so lanes can be
+        // snapshots of it. An existing plain base is converted once.
+        let snapshots = super::snapshot::snapshot_enabled()
+            && super::btrfs::is_btrfs(grove_dir)
+            && super::btrfs::btrfs_available();
+        if snapshots && base.exists() && !super::btrfs::is_subvolume(base) {
+            self.convert_base_to_subvolume(repo_path, base)?;
+        }
+
         if base.exists() {
             if !base.join(".git").is_file() {
                 return Err("it exists but is not a git worktree; remove it to recreate".into());
@@ -185,6 +194,8 @@ impl ShellBackend {
                     .map_err(|e| e.to_string())?;
                 drop(heavy);
             }
+        } else if snapshots {
+            self.create_base_subvolume(repo_path, grove_dir, base, seed, base_ref)?;
         } else {
             eprintln!(
                 "Creating the base checkout {} at {base_ref} (first use, takes a while)",
@@ -259,6 +270,122 @@ impl ShellBackend {
             path: base.to_path_buf(),
             lock,
         }))
+    }
+}
+
+impl ShellBackend {
+    /// Create a missing base as a subvolume: a snapshot of the seed base when
+    /// that is a subvolume (only the files that differ are rewritten), else a
+    /// full checkout into a new, empty subvolume.
+    fn create_base_subvolume(
+        &self,
+        repo_path: &Path,
+        grove_dir: &Path,
+        base: &Path,
+        seed: Option<&Path>,
+        base_ref: &str,
+    ) -> Result<(), String> {
+        use super::btrfs;
+        use super::snapshot::{Checkout, staging_dir};
+        eprintln!(
+            "Creating the base checkout {} at {base_ref} as a btrfs subvolume (first use)",
+            base.display()
+        );
+        let work_dir = grove_dir.parent().ok_or("grove dir has no parent")?;
+        let seed = seed.filter(|s| btrfs::is_subvolume(s) && s.join(".git").is_file());
+        if let Some(seed) = seed {
+            let seed_lock = lock_base(seed)?;
+            let probe = self.snapshot_probe(seed, base)?;
+            self.worktree_add_snapshot(
+                repo_path,
+                seed,
+                base,
+                Checkout::Detach(base_ref),
+                &staging_dir(work_dir),
+                probe,
+                Some(seed_lock),
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            let base_str = base.to_str().ok_or("path is not UTF-8")?;
+            let heavy = MachineLock::acquire("copy", &tag_of(base))?;
+            btrfs::create_subvolume(base).map_err(|e| e.to_string())?;
+            // git accepts an empty existing directory as the new worktree.
+            if let Err(e) = self.run(
+                repo_path,
+                &["worktree", "add", "--detach", base_str, base_ref],
+            ) {
+                let _ = btrfs::delete_subvolume(base, &[]);
+                let _ = self.run(repo_path, &["worktree", "remove", "--force", base_str]);
+                return Err(e.to_string());
+            }
+            drop(heavy);
+        }
+        let heavy = MachineLock::acquire("copy", &tag_of(base))?;
+        self.lfs_dedup_or_warn(base);
+        drop(heavy);
+        Ok(())
+    }
+
+    /// Replace a clean plain-directory base with a subvolume at the same
+    /// commit: a checkout into `<base>.new`, then the old base is removed
+    /// (one unlink per tracked file) and the new one moved into place. The
+    /// caller holds the base lock.
+    fn convert_base_to_subvolume(&self, repo_path: &Path, base: &Path) -> Result<(), String> {
+        use super::btrfs;
+        if !base.join(".git").is_file() {
+            return Err("it exists but is not a git worktree; remove it to recreate".into());
+        }
+        let dirty = self
+            .run_stdout(base, &["status", "--porcelain", "--ignored"])
+            .map_err(|e| e.to_string())?;
+        if !dirty.is_empty() {
+            return Err(format!(
+                "it is not clean, so it was not converted to a subvolume; remove it with \
+                 `git worktree remove --force {}` and grove recreates it",
+                base.display()
+            ));
+        }
+        let head = self
+            .run_stdout(base, &["rev-parse", "--verify", "HEAD^{commit}"])
+            .map_err(|e| e.to_string())?;
+        let name = base.file_name().ok_or("base path has no name")?;
+        let new = base.with_file_name(format!("{}.new", name.to_string_lossy()));
+        let (base_str, new_str) = (
+            base.to_str().ok_or("path is not UTF-8")?,
+            new.to_str().ok_or("path is not UTF-8")?,
+        );
+        eprintln!(
+            "Converting the base checkout {} to a btrfs subvolume (once, takes a while)",
+            base.display()
+        );
+        let heavy = MachineLock::acquire("copy", &tag_of(base))?;
+        // A leftover from a run that died: its registration, then its tree.
+        if new.exists() {
+            let _ = self.run(
+                repo_path,
+                &["worktree", "remove", "--force", "--force", new_str],
+            );
+            if btrfs::is_subvolume(&new) {
+                btrfs::delete_subvolume(&new, &[]).map_err(|e| e.to_string())?;
+            }
+        }
+        btrfs::create_subvolume(&new).map_err(|e| e.to_string())?;
+        let filled = self
+            .run(repo_path, &["worktree", "add", "--detach", new_str, &head])
+            .map_err(|e| e.to_string());
+        if let Err(e) = filled {
+            let _ = btrfs::delete_subvolume(&new, &[]);
+            let _ = self.run(repo_path, &["worktree", "remove", "--force", new_str]);
+            return Err(e);
+        }
+        self.lfs_dedup_or_warn(&new);
+        self.run(repo_path, &["worktree", "remove", "--force", base_str])
+            .map_err(|e| e.to_string())?;
+        self.run(repo_path, &["worktree", "move", new_str, base_str])
+            .map_err(|e| format!("{e}; the new base is at {}", new.display()))?;
+        drop(heavy);
+        Ok(())
     }
 }
 
@@ -504,6 +631,86 @@ mod tests {
             ],
         );
         crate::git::btrfs::delete_subvolume(&scratch, &[]).unwrap();
+    }
+
+    /// With snapshots on, a plain base is converted to a subvolume, a new
+    /// stable base is a snapshot of it, and both stay clean.
+    #[test]
+    fn bases_become_subvolumes_when_snapshots_are_on() {
+        use crate::git::btrfs;
+        use crate::git::snapshot::FORCE_ENABLED;
+        let Some(tmp) = btrfs::tests::btrfs_scratch() else {
+            return;
+        };
+        let work_dir = tmp.path().to_path_buf();
+        let main = work_dir.join("master");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q", "-b", "main"]);
+        std::fs::write(main.join("a.txt"), "one\n").unwrap();
+        git(&main, &["add", "."]);
+        git(
+            &main,
+            &[
+                "-c",
+                "user.email=t@e",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "-m",
+                "one",
+            ],
+        );
+        git(&main, &["branch", "up/stable/1.0"]);
+        let scratch = work_dir.join(".scratch");
+        let backend = ShellBackend::new();
+
+        FORCE_ENABLED.with(|f| f.set(Some(false)));
+        drop(
+            backend
+                .prepare_base(&main, &work_dir, &scratch, "main")
+                .unwrap(),
+        );
+        let base = base_path(&work_dir);
+        assert!(!btrfs::is_subvolume(&base));
+
+        FORCE_ENABLED.with(|f| f.set(Some(true)));
+        drop(
+            backend
+                .prepare_base(&main, &work_dir, &scratch, "main")
+                .unwrap(),
+        );
+        assert!(btrfs::is_subvolume(&base), "converted");
+        assert_eq!(git(&base, &["status", "--porcelain", "--ignored"]), "");
+        assert!(!work_dir.join(".grove/base.new").exists());
+
+        let stable = backend
+            .prepare_stable_base(&main, &work_dir, &scratch, "up", "1.0")
+            .unwrap();
+        assert!(btrfs::is_subvolume(&stable.path));
+        assert_eq!(
+            btrfs::subvol_info(&stable.path).unwrap().parent_uuid,
+            btrfs::subvol_info(&base).unwrap().uuid,
+            "the stable base is a snapshot of the default base"
+        );
+        assert_eq!(
+            git(&stable.path, &["status", "--porcelain", "--ignored"]),
+            ""
+        );
+        drop(stable);
+
+        // A base made fresh with snapshots on is a subvolume too.
+        git(
+            &main,
+            &["worktree", "remove", "--force", base.to_str().unwrap()],
+        );
+        drop(
+            backend
+                .prepare_base(&main, &work_dir, &scratch, "main")
+                .unwrap(),
+        );
+        assert!(btrfs::is_subvolume(&base));
+        FORCE_ENABLED.with(|f| f.set(None));
     }
 
     #[test]

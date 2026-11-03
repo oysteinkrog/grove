@@ -393,7 +393,7 @@ pub fn check_headroom(path: &Path) -> Result<(), String> {
     headroom_ok(room, floor_gib)
 }
 
-/// Test hook: the headroom floor for this thread only.
+// Test hook: the headroom floor for this thread only.
 #[cfg(test)]
 thread_local! {
     pub(crate) static TEST_FLOOR_GIB: std::cell::Cell<Option<u64>> =
