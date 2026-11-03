@@ -7,9 +7,8 @@
 //! reservation. The lock in `<base.lock>` covers one repo only, so this one
 //! lives in a per-user directory and covers every repo on the machine:
 //!
-//! - `$GROVE_LOCK_DIR` when set (tests use it),
-//! - else `/run/user/<uid>/grove`, or `$XDG_RUNTIME_DIR/grove` without it,
-//! - else `~/.local/state/grove`.
+//! `~/.local/state/grove`, or `$GROVE_LOCK_DIR` when set (tests use it).
+//! See [`lock_dir`] for why it is not a runtime directory.
 //!
 //! The holder writes `copy.lock.json` next to the lock with its pid, tag,
 //! command and start time, so a waiting command can say who it waits for.
@@ -59,50 +58,23 @@ impl Holder {
     }
 }
 
-/// The directories to try for the machine-wide lock, best first.
-/// `$GROVE_LOCK_DIR`, when set, is the only one.
-pub fn lock_dirs() -> Vec<PathBuf> {
+/// The directory of the machine-wide lock: `$GROVE_LOCK_DIR` when set, else
+/// `~/.local/state/grove`.
+///
+/// There is exactly one candidate on purpose. Every grove run of one user
+/// must open the same lock file, and a runtime directory is not stable for
+/// that: cron runs before login have no `/run/user/<uid>`, and some units
+/// set their own `$XDG_RUNTIME_DIR`. The path is built from the home
+/// directory, not `$XDG_STATE_HOME`, for the same reason.
+pub fn lock_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os(LOCK_DIR_ENV).filter(|v| !v.is_empty()) {
-        return vec![PathBuf::from(dir)];
+        return Some(PathBuf::from(dir));
     }
     if cfg!(test) {
         // Unit tests never touch the real machine lock.
-        return vec![std::env::temp_dir().join("grove-unit-test-locks")];
+        return Some(std::env::temp_dir().join("grove-unit-test-locks"));
     }
-    let mut dirs = Vec::new();
-    if let Some(dir) = runtime_dir() {
-        dirs.push(dir.join("grove"));
-    }
-    if let Some(b) = directories::BaseDirs::new() {
-        dirs.push(b.home_dir().join(".local").join("state").join("grove"));
-    }
-    dirs
-}
-
-/// The directory of the machine-wide lock when every candidate works.
-pub fn lock_dir() -> Option<PathBuf> {
-    lock_dirs().into_iter().next()
-}
-
-/// The user's runtime directory. Every grove run of one user must pick the
-/// same lock file, and cron or some ssh sessions have no `$XDG_RUNTIME_DIR`.
-fn runtime_dir() -> Option<PathBuf> {
-    // `/run/user/<uid>` first: a process with its own `$XDG_RUNTIME_DIR`
-    // (some systemd units, `sudo -u`) must still find the same lock.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let Ok(meta) = std::fs::metadata("/proc/self") {
-            let dir = PathBuf::from(format!("/run/user/{}", meta.uid()));
-            if dir.is_dir() {
-                return Some(dir);
-            }
-        }
-    }
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_dir())
+    directories::BaseDirs::new().map(|b| b.home_dir().join(".local").join("state").join("grove"))
 }
 
 /// The held lock. Dropping it removes the holder file and releases the lock.
@@ -115,27 +87,22 @@ impl MachineLock {
     /// Take the machine-wide lock for `op` (`copy` or `delete`) on `tag`,
     /// waiting while another grove command holds it.
     ///
-    /// Tries each of [`lock_dirs`] in turn. Fails when none works: the heavy
-    /// work must not run unserialized just because the lock is broken.
+    /// Fails when the lock cannot be taken: the heavy work must not run
+    /// unserialized just because the lock is broken.
     /// On Windows it holds nothing and never fails.
     pub fn acquire(op: &str, tag: &str) -> Result<Self, String> {
         if !cfg!(unix) {
             return Ok(Self::none());
         }
-        let mut errors = Vec::new();
-        for dir in lock_dirs() {
-            match Self::acquire_in(&dir, op, tag) {
-                Ok(lock) => return Ok(lock),
-                Err(e) => errors.push(format!("{}: {e}", dir.display())),
-            }
-        }
-        if errors.is_empty() {
-            errors.push("no lock directory found".to_string());
-        }
-        Err(format!(
-            "could not take the grove machine lock ({}); set {LOCK_DIR_ENV} to a writable directory",
-            errors.join("; ")
-        ))
+        let dir = lock_dir().ok_or_else(|| {
+            format!("could not take the grove machine lock: no home directory; set {LOCK_DIR_ENV}")
+        })?;
+        Self::acquire_in(&dir, op, tag).map_err(|e| {
+            format!(
+                "could not take the grove machine lock in {} ({e}); set {LOCK_DIR_ENV} to a writable directory",
+                dir.display()
+            )
+        })
     }
 
     /// Take the lock for cleanup that must run anyway (removing a half-made
