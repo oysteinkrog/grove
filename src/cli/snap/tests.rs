@@ -71,6 +71,7 @@ fn snap_skips_unchanged_lanes_restores_and_prunes() {
     std::fs::create_dir_all(&main).unwrap();
     git(&main, &["init", "-q", "-b", "main"]);
     std::fs::write(main.join("a.txt"), "one\n").unwrap();
+    std::fs::write(main.join(".gitignore"), "*.db\n").unwrap();
     git(&main, &["add", "."]);
     git(
         &main,
