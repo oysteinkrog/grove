@@ -82,6 +82,10 @@ fn remove_tree(
     let delete_lock =
         crate::machine_lock::acquire_paced("delete", &crate::machine_lock::tag_of(path))?;
 
+    // The wait above can be long. Check the finding still holds before the
+    // guards, and act on what is there now.
+    still_eligible(finding, grove_dir, tag)?;
+
     let safety = guards::inspect_tree(path).map_err(|e| {
         format!(
             "could not re-check {} before removing it: {e}",
@@ -94,6 +98,15 @@ fn remove_tree(
             "{} changed since the scan and is no longer safe to remove: {}",
             path.display(),
             blockers.join("; ")
+        ));
+    }
+
+    if let (Some(scanned), Some(now)) = (head, safety.head.as_deref())
+        && scanned != now
+    {
+        return Err(format!(
+            "{} moved from {scanned} to {now} since the scan; left in place",
+            path.display()
         ));
     }
 
@@ -141,6 +154,45 @@ fn remove_tree(
     }
 
     Ok(message)
+}
+
+/// Fail when the registry changed since the scan in a way that makes the
+/// finding wrong: a registered lane gone, moved, frozen, or given a later
+/// expiry; an unregistered tree registered (adopted) meanwhile.
+fn still_eligible(finding: &Finding, grove_dir: &Path, tag: Option<&str>) -> Result<(), String> {
+    let path = &finding.path;
+    let registry =
+        Registry::load(grove_dir).map_err(|e| format!("could not read the registry: {e}"))?;
+    let changed = |why: &str| {
+        Err(format!(
+            "{} {why} since the scan; left in place",
+            path.display()
+        ))
+    };
+    match tag {
+        Some(tag) => {
+            let Some(project) = registry.projects.get(tag) else {
+                return changed(&format!("is no longer registered as '{tag}'"));
+            };
+            if &project.path != path {
+                return changed(&format!("is no longer the path of '{tag}'"));
+            }
+            if project.frozen {
+                return changed("was frozen");
+            }
+            if finding.category == super::Category::ExpiredEphemeral
+                && !project.is_expired(time::OffsetDateTime::now_utc())
+            {
+                return changed("had its expiry extended");
+            }
+        }
+        None => {
+            if registry.projects.values().any(|p| &p.path == path) {
+                return changed("was registered");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Ask git to remove the worktree. Directories that are not linked worktrees
@@ -310,6 +362,76 @@ mod tests {
             tree.exists(),
             "a tree that failed its re-check must survive"
         );
+    }
+
+    fn ephemeral_finding(tag: Option<&str>, path: &Path) -> Finding {
+        Finding::new(Category::ExpiredEphemeral, "lane", path).remedy(Remedy::RemoveEphemeral {
+            tag: tag.map(str::to_string),
+            branch: None,
+            head: None,
+        })
+    }
+
+    #[test]
+    fn removal_skips_a_lane_whose_expiry_was_extended_after_the_scan() {
+        let dir = TempDir::new().unwrap();
+        let tree = dir.path().join("lane");
+        std::fs::create_dir_all(&tree).unwrap();
+        let grove_dir = dir.path().join(".grove");
+        let mut extended = project(&tree);
+        extended.expires_at = Some(OffsetDateTime::now_utc() + time::Duration::days(3));
+        Registry::insert_on_disk(&grove_dir, "lane".to_string(), extended).unwrap();
+        let layout = Layout {
+            work_dir: dir.path().to_path_buf(),
+            main_repo: dir.path().join("master"),
+        };
+
+        let err = apply(&ephemeral_finding(Some("lane"), &tree), &layout, &grove_dir).unwrap_err();
+        assert!(err.contains("expiry extended"), "{err}");
+        assert!(tree.exists());
+    }
+
+    #[test]
+    fn removal_skips_a_lane_frozen_or_deregistered_after_the_scan() {
+        let dir = TempDir::new().unwrap();
+        let tree = dir.path().join("lane");
+        std::fs::create_dir_all(&tree).unwrap();
+        let grove_dir = dir.path().join(".grove");
+        let layout = Layout {
+            work_dir: dir.path().to_path_buf(),
+            main_repo: dir.path().join("master"),
+        };
+
+        // Not registered any more.
+        Registry::default().save(&grove_dir).unwrap();
+        let err = apply(&ephemeral_finding(Some("lane"), &tree), &layout, &grove_dir).unwrap_err();
+        assert!(err.contains("no longer registered"), "{err}");
+
+        // Registered again, but frozen.
+        let mut frozen = project(&tree);
+        frozen.frozen = true;
+        frozen.expires_at = Some(OffsetDateTime::now_utc() - time::Duration::days(1));
+        Registry::insert_on_disk(&grove_dir, "lane".to_string(), frozen).unwrap();
+        let err = apply(&ephemeral_finding(Some("lane"), &tree), &layout, &grove_dir).unwrap_err();
+        assert!(err.contains("frozen"), "{err}");
+        assert!(tree.exists());
+    }
+
+    #[test]
+    fn removal_skips_an_unregistered_tree_adopted_after_the_scan() {
+        let dir = TempDir::new().unwrap();
+        let tree = dir.path().join(".scratch").join("raw");
+        std::fs::create_dir_all(&tree).unwrap();
+        let grove_dir = dir.path().join(".grove");
+        Registry::insert_on_disk(&grove_dir, "adopted".to_string(), project(&tree)).unwrap();
+        let layout = Layout {
+            work_dir: dir.path().to_path_buf(),
+            main_repo: dir.path().join("master"),
+        };
+
+        let err = apply(&ephemeral_finding(None, &tree), &layout, &grove_dir).unwrap_err();
+        assert!(err.contains("was registered"), "{err}");
+        assert!(tree.exists());
     }
 
     #[test]
