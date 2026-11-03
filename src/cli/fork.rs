@@ -45,6 +45,10 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
             })?;
 
     let source_branch = source_project.branch.clone();
+    // Start at the commit the source lane has checked out, which may differ
+    // from its registered branch (switched or detached). Fall back to the
+    // registered branch when the source tree is gone.
+    let start_point = source_head(&source_project.path).unwrap_or_else(|| source_branch.clone());
     let source_base = source_project.base.clone();
 
     let new_branch = compute_branch_name(
@@ -80,7 +84,7 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
             &source_project.path,
             &target,
             &new_branch,
-            Some(&source_branch),
+            Some(&start_point),
         )?;
         copied_from = Some(source_project.path.clone());
     } else if let Some(prepared) = prepare_base_for(&backend, cx, &source_base, target_dir) {
@@ -90,7 +94,7 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
             &base_dir,
             &target,
             &new_branch,
-            Some(&source_branch),
+            Some(&start_point),
             Some(prepared.lock),
         )?;
         copied_from = Some(base_dir);
@@ -100,7 +104,7 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
             &cx.resolved.main_repo,
             &target,
             &new_branch,
-            Some(&source_branch),
+            Some(&start_point),
         )?;
         backend.lfs_dedup_or_warn(&target);
     }
@@ -125,6 +129,9 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
 
     println!("Forked '{}' \u{2192} '{}'", source_tag, new_tag);
     println!("  Source branch: {source_branch}");
+    if start_point != source_branch {
+        println!("  Start:         {start_point}");
+    }
     if let Some(issue) = args.issue {
         println!(
             "  Issue:         {}-{issue}",
@@ -149,6 +156,17 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The commit checked out in the worktree at `path`, if it is one.
+fn source_head(path: &std::path::Path) -> Option<String> {
+    if !path.join(".git").exists() {
+        return None;
+    }
+    ShellBackend::new()
+        .run_stdout(path, &["rev-parse", "--verify", "HEAD^{commit}"])
+        .ok()
+        .filter(|oid| !oid.is_empty())
 }
 
 /// Resolve `(source_tag, new_tag)` from the 1-or-2-positional Vec.

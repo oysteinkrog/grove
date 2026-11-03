@@ -619,3 +619,42 @@ fn fork_copy_source_keeps_build_output() {
         eprintln!("no reflinks here: --copy-source fell back to a plain worktree");
     }
 }
+
+/// A source lane that moved off its registered branch (detached with a new
+/// commit) is forked at the commit it has checked out.
+#[test]
+fn fork_starts_at_the_source_checkout_not_the_registered_branch() {
+    let (_bare, clone) = make_bare_and_clone("if");
+    let work_dir = TempDir::new().unwrap();
+    let grove_dir = work_dir.path().join(".grove");
+    let src = live_source_lane(clone.path(), work_dir.path());
+    git_out(&src, &["checkout", "-q", "--detach"]);
+    git_out(&src, &["commit", "-q", "-am", "detached work"]);
+    let head = git_out(&src, &["rev-parse", "HEAD"]);
+    assert_ne!(head, git_out(&src, &["rev-parse", "feature"]));
+
+    let cx = make_context_with_project(
+        clone.path(),
+        work_dir.path(),
+        &grove_dir,
+        "if",
+        "src",
+        "feature",
+    );
+    let args = ForkArgs {
+        positionals: vec!["src".to_string(), "moved".to_string()],
+        issue: None,
+        branch: None,
+        no_fetch: true,
+        ephemeral: false,
+        ttl: None,
+        copy_source: false,
+    };
+    run(&args, &cx).expect("fork should succeed");
+    let target = work_dir.path().join("moved");
+    assert_eq!(git_out(&target, &["rev-parse", "HEAD"]), head);
+    assert_eq!(
+        std::fs::read_to_string(target.join("feature.txt")).unwrap(),
+        "edited, not committed\n"
+    );
+}
