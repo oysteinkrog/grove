@@ -197,6 +197,12 @@ impl ShellBackend {
                 entries.push(entry.path());
             }
         }
+        // One whole-tree copy at a time on this machine: several at once
+        // froze the desktop. Held for the file copy and the index copy only,
+        // not for the reset and clean below.
+        let copy_lock =
+            crate::machine_lock::MachineLock::acquire("copy", &crate::machine_lock::tag_of(target));
+
         if !entries.is_empty() {
             let output = Command::new("cp")
                 .args(["-a", "--reflink=always", "-t"])
@@ -238,6 +244,7 @@ impl ShellBackend {
         }
 
         // Everything needed from `source` is copied; let others use it.
+        drop(copy_lock);
         drop(source_lock);
 
         // The copied index still holds the inode and ctime of the source files,

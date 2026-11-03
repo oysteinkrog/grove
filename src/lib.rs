@@ -8,6 +8,7 @@ pub mod events;
 pub mod gc;
 pub mod git;
 pub mod launch;
+pub mod machine_lock;
 pub mod migrate;
 pub mod paths;
 pub mod registry;
