@@ -69,16 +69,20 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     let mut copied_from = None;
     let mut reflinked = false;
     let prepared = prepare_base_for(&backend, cx, &base_ref, target_dir);
+    let mut how = "reflink";
     if let Some(prepared) = prepared {
         let base_dir = prepared.path.clone();
-        reflinked = backend.worktree_add_reflinked_locked(
-            &cx.resolved.main_repo,
+        let made = add_from_source(
+            &backend,
+            cx,
             &base_dir,
             &target,
             &branch,
-            Some(&base_ref),
+            &base_ref,
             Some(prepared.lock),
         )?;
+        reflinked = made.is_some();
+        how = made.unwrap_or(how);
         copied_from = Some(base_dir);
     }
     if !reflinked {
@@ -125,7 +129,7 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     println!("  Base:   {base_ref}");
     println!("  Path:   {}", target.display());
     if let (true, Some(source)) = (reflinked, &copied_from) {
-        println!("  Copy:   reflink of {}", source.display());
+        println!("  Copy:   {how} of {}", source.display());
     }
     if let Some(expires_at) = expires_at {
         println!(
@@ -137,6 +141,50 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Make `target` on a new branch from the checkout `source`: a btrfs
+/// snapshot when snapshot lanes are on and `source` allows it, else a reflink
+/// copy. Returns how it was made, or `None` when neither could be used and
+/// nothing was changed; the caller then makes a plain worktree.
+/// `source_lock` is held until the source's files and index are captured.
+pub(crate) fn add_from_source(
+    backend: &ShellBackend,
+    cx: &RepoContext,
+    source: &Path,
+    target: &Path,
+    branch: &str,
+    start: &str,
+    source_lock: Option<std::fs::File>,
+) -> Result<Option<&'static str>> {
+    use crate::git::snapshot::{Checkout, snapshot_enabled, staging_dir};
+    match backend.snapshot_probe(source, target) {
+        Ok(probe) => {
+            backend.worktree_add_snapshot(
+                &cx.resolved.main_repo,
+                source,
+                target,
+                Checkout::NewBranch { branch, start },
+                &staging_dir(&cx.resolved.work_dir),
+                probe,
+                source_lock,
+            )?;
+            return Ok(Some("snapshot"));
+        }
+        Err(why) if snapshot_enabled() => {
+            eprintln!("note: not a snapshot lane: {why}");
+        }
+        Err(_) => {}
+    }
+    let reflinked = backend.worktree_add_reflinked_locked(
+        &cx.resolved.main_repo,
+        source,
+        target,
+        branch,
+        Some(start),
+        source_lock,
+    )?;
+    Ok(reflinked.then_some("reflink"))
 }
 
 /// Prepare the clean base checkout that a lane with base `base_ref` is copied

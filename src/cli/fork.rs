@@ -1,7 +1,8 @@
 use time::OffsetDateTime;
 
 use crate::cli::new::{
-    compute_branch_name, compute_target_path, prepare_base_for, resolve_expiry, validate_tag,
+    add_from_source, compute_branch_name, compute_target_path, prepare_base_for, resolve_expiry,
+    validate_tag,
 };
 use crate::error::{GroveError, Result};
 use crate::git::WorktreeMutator;
@@ -78,26 +79,38 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
     let target_dir = target.parent().unwrap_or(&cx.resolved.work_dir);
     let mut copied_from = None;
     let mut reflinked = false;
-    if args.copy_source {
-        reflinked = backend.worktree_add_reflinked(
-            &cx.resolved.main_repo,
+    let mut how = "reflink";
+    let made = if args.copy_source {
+        copied_from = Some(source_project.path.clone());
+        // A source lane that is a subvolume is snapshotted, build output and
+        // all, at almost no cost; any other is reflink-copied as before.
+        add_from_source(
+            &backend,
+            cx,
             &source_project.path,
             &target,
             &new_branch,
-            Some(&start_point),
-        )?;
-        copied_from = Some(source_project.path.clone());
+            &start_point,
+            None,
+        )?
     } else if let Some(prepared) = prepare_base_for(&backend, cx, &source_base, target_dir) {
         let base_dir = prepared.path.clone();
-        reflinked = backend.worktree_add_reflinked_locked(
-            &cx.resolved.main_repo,
+        copied_from = Some(base_dir.clone());
+        add_from_source(
+            &backend,
+            cx,
             &base_dir,
             &target,
             &new_branch,
-            Some(&start_point),
+            &start_point,
             Some(prepared.lock),
-        )?;
-        copied_from = Some(base_dir);
+        )?
+    } else {
+        None
+    };
+    if let Some(kind) = made {
+        reflinked = true;
+        how = kind;
     }
     if !reflinked {
         // A plain checkout writes every tracked file: serialize it too.
@@ -151,7 +164,7 @@ pub fn run(args: &ForkArgs, cx: &RepoContext) -> Result<()> {
     println!("  Branch:        {new_branch}");
     println!("  Path:          {}", target.display());
     if let (true, Some(source)) = (reflinked, &copied_from) {
-        println!("  Copy:          reflink of {}", source.display());
+        println!("  Copy:          {how} of {}", source.display());
     }
     if !args.copy_source {
         println!("  Build output:  none copied (use --copy-source to copy the source lane)");
