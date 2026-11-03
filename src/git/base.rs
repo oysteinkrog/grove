@@ -172,11 +172,19 @@ impl ShellBackend {
                 return Err("it exists but is not a git worktree; remove it to recreate".into());
             }
             // Moving an old base to a new upstream commit can rewrite many
-            // files: the same load the machine lock serializes.
-            let heavy = MachineLock::acquire("copy", &tag_of(base))?;
-            self.run(base, &["checkout", "-q", "--detach", base_ref])
-                .map_err(|e| e.to_string())?;
-            drop(heavy);
+            // files: the same load the machine lock serializes. A base that
+            // is already there (the common case) needs neither.
+            let at = |rev: &str| {
+                self.run_stdout(base, &["rev-parse", "--verify", "-q", rev])
+                    .ok()
+            };
+            let wanted = format!("{base_ref}^{{commit}}");
+            if at("HEAD").is_none() || at("HEAD") != at(&wanted) {
+                let heavy = MachineLock::acquire("copy", &tag_of(base))?;
+                self.run(base, &["checkout", "-q", "--detach", base_ref])
+                    .map_err(|e| e.to_string())?;
+                drop(heavy);
+            }
         } else {
             eprintln!(
                 "Creating the base checkout {} at {base_ref} (first use, takes a while)",
@@ -189,6 +197,9 @@ impl ShellBackend {
                 // files that differ. Hold the seed's lock so it does not move
                 // while it is copied.
                 Some(seed) => lock_base(seed).and_then(|seed_lock| {
+                    // Taken before `worktree add`, as for a lane, so no empty
+                    // registered worktree waits for it.
+                    let heavy = MachineLock::acquire("copy", &tag_of(base))?;
                     self.run(
                         repo_path,
                         &[
@@ -201,8 +212,11 @@ impl ShellBackend {
                         ],
                     )
                     .map_err(|e| e.to_string())?;
-                    self.fill_from_source(seed, base, Some(seed_lock))
-                        .map_err(|e| e.to_string())
+                    let filled = self
+                        .fill_from_source_held(seed, base, Some(seed_lock))
+                        .map_err(|e| e.to_string());
+                    drop(heavy);
+                    filled
                 }),
                 // A full checkout of every tracked file.
                 None => MachineLock::acquire("copy", &tag_of(base)).and_then(|_heavy| {

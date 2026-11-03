@@ -47,6 +47,10 @@ fn resolve_tag(args: &DoneArgs, cx: &RepoContext) -> Result<String> {
 
 pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
     let tag = resolve_tag(args, cx)?;
+    // Fail fast on an unknown tag instead of after waiting for the lock.
+    if !cx.registry.projects.contains_key(&tag) {
+        return Err(GroveError::WorktreeNotFound(std::path::PathBuf::from(&tag)));
+    }
 
     // A single interactive delete runs at once, without the pressure pause
     // gc uses, but still one at a time with other copies and deletes. Taken

@@ -196,23 +196,9 @@ impl ShellBackend {
         Ok(true)
     }
 
-    /// Fill the empty worktree `target` from `source`, taking the
-    /// machine-wide copy lock for the whole fill.
-    pub(super) fn fill_from_source(
-        &self,
-        source: &Path,
-        target: &Path,
-        source_lock: Option<std::fs::File>,
-    ) -> Result<(), GroveError> {
-        let copy_lock = take_copy_lock(target)?;
-        let filled = self.fill_from_source_held(source, target, source_lock);
-        drop(copy_lock);
-        filled
-    }
-
-    /// [`Self::fill_from_source`] for a caller that already holds the copy
-    /// lock.
-    fn fill_from_source_held(
+    /// Fill the empty worktree `target` from `source`. The caller holds the
+    /// machine-wide copy lock.
+    pub(super) fn fill_from_source_held(
         &self,
         source: &Path,
         target: &Path,
