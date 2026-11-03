@@ -148,7 +148,37 @@ fn snap_skips_unchanged_lanes_restores_and_prunes() {
         std::fs::read_to_string(lane.join("a.txt")).unwrap(),
         "edited, not committed\n"
     );
-    assert!(run_restore(&cx, "lane", &first, Some(Path::new("../x"))).is_err());
+    for bad in ["../x", "", ".git", "/etc/passwd"] {
+        assert!(
+            run_restore(&cx, "lane", &first, Some(Path::new(bad))).is_err(),
+            "{bad}"
+        );
+    }
+    // Twice within one second: both earlier versions are kept.
+    run_restore(&cx, "lane", &first, Some(Path::new("a.txt"))).unwrap();
+    run_restore(&cx, "lane", &first, Some(Path::new("a.txt"))).unwrap();
+    let kept = std::fs::read_dir(&lane)
+        .unwrap()
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("a.txt.before-restore-")
+        })
+        .count();
+    assert_eq!(kept, 2);
+    for e in std::fs::read_dir(&lane).unwrap().flatten() {
+        if e.file_name()
+            .to_string_lossy()
+            .starts_with("a.txt.before-restore-")
+        {
+            std::fs::remove_file(e.path()).unwrap();
+        }
+    }
+    // A symlinked directory on the way is refused.
+    std::os::unix::fs::symlink("/etc", lane.join("out")).unwrap();
+    assert!(run_restore(&cx, "lane", &first, Some(Path::new("out/passwd"))).is_err());
+    std::fs::remove_file(lane.join("out")).unwrap();
 
     let second = snaps[1]
         .path
@@ -169,6 +199,11 @@ fn snap_skips_unchanged_lanes_restores_and_prunes() {
         .flatten()
         .collect();
     assert_eq!(aside.len(), 1, "the damaged lane is kept aside");
+    assert!(
+        !aside[0].path().join(".git").exists(),
+        "the old tree is detached"
+    );
+    assert!(aside[0].path().join(".git.detached-by-grove").exists());
 
     // Pruning: days later a live lane keeps only its newest snap...
     std::fs::write(lane.join("c.txt"), "x").unwrap();

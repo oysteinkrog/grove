@@ -11,6 +11,9 @@
 //! - pruned to the newest snap per hour for 24 hours and per day for 3 days,
 //!   and always the newest one of a lane that is still registered.
 //!
+//! A snap does not hold nested subvolumes (a lane's own `.scratch`): btrfs
+//! leaves an empty placeholder for them.
+//!
 //! `grove done` leaves a lane's snaps alone; they age out on this schedule,
 //! as snapper would have kept the lane. The index, HEAD and config of a lane
 //! live in the main repo's `.git`, which snapper still covers.
@@ -223,24 +226,20 @@ pub fn run_restore(cx: &RepoContext, tag: &str, name: &str, file: Option<&Path>)
     let stamp = OffsetDateTime::now_utc().format(NAME_FORMAT)?;
 
     if let Some(rel) = file {
-        if rel.is_absolute()
-            || rel
-                .components()
-                .any(|c| !matches!(c, std::path::Component::Normal(_)))
-        {
-            bail!("give the file as a plain path inside the lane");
-        }
+        check_rel(rel)?;
+        no_symlinked_parents(&snap.path, rel)?;
+        no_symlinked_parents(lane, rel)?;
         let from = snap.path.join(rel);
-        if !from.exists() {
+        if std::fs::symlink_metadata(&from).is_err() {
             bail!("{} is not in the snap", rel.display());
         }
         let to = lane.join(rel);
-        if to.exists() || to.is_symlink() {
-            let aside = to.with_file_name(format!(
-                "{}.before-restore-{stamp}",
-                to.file_name().unwrap_or_default().to_string_lossy()
-            ));
-            std::fs::rename(&to, &aside)?;
+        if std::fs::symlink_metadata(&to).is_ok() {
+            let name = to.file_name().unwrap_or_default().to_string_lossy();
+            let aside = move_aside(
+                &to,
+                &to.with_file_name(format!("{name}.before-restore-{stamp}")),
+            )?;
             println!("moved the current file to {}", aside.display());
         }
         if let Some(parent) = to.parent() {
@@ -268,11 +267,25 @@ pub fn run_restore(cx: &RepoContext, tag: &str, name: &str, file: Option<&Path>)
             lane.display()
         );
     }
+    // Nested worktrees in the lane's .scratch are not in the snap; moving
+    // the lane aside would cut them off from their registrations.
+    let scratch = lane.join(crate::cli::new::SCRATCH_DIR);
+    if std::fs::read_dir(&scratch).is_ok_and(|mut d| d.next().is_some()) {
+        bail!(
+            "{} is not empty and the snap does not hold it; move what is in it first, \
+             or restore single files with --file",
+            scratch.display()
+        );
+    }
     let archive = work_dir.join(".archive");
     std::fs::create_dir_all(&archive)?;
-    let aside = archive.join(format!("{tag}.before-restore-{stamp}"));
-    std::fs::rename(lane, &aside)?;
+    let aside = move_aside(lane, &archive.join(format!("{tag}.before-restore-{stamp}")))?;
+    // The old tree must not share the restored lane's admin directory: git
+    // run in it would change the lane's index and HEAD.
+    let detached = aside.join(".git.detached-by-grove");
+    std::fs::rename(aside.join(".git"), &detached)?;
     if let Err(e) = btrfs::snapshot(&snap.path, lane, false) {
+        std::fs::rename(&detached, aside.join(".git"))?;
         std::fs::rename(&aside, lane)?;
         bail!("{e}; the lane was left as it was");
     }
@@ -284,12 +297,85 @@ pub fn run_restore(cx: &RepoContext, tag: &str, name: &str, file: Option<&Path>)
         .args(["update-index", "-q", "--refresh"])
         .output();
     println!(
-        "restored {} from {}; the lane as it was is at {}",
+        "restored {} from {}; the lane as it was is at {} (its .git renamed to \
+         .git.detached-by-grove)",
         lane.display(),
         snap.path.display(),
         aside.display()
     );
     Ok(())
+}
+
+/// A path inside a lane: relative, plain names only, not empty, not `.git`.
+fn check_rel(rel: &Path) -> Result<()> {
+    let mut parts = rel.components();
+    let first = parts.next();
+    let plain = first.is_some()
+        && rel
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)));
+    if !plain {
+        bail!("give the file as a plain path inside the lane");
+    }
+    if first.is_some_and(|c| c.as_os_str() == ".git") {
+        bail!("the lane's .git is not restored; it names the lane's admin directory");
+    }
+    Ok(())
+}
+
+/// Refuse when a directory on the way to `root/rel` is a symlink, which
+/// could lead outside `root`.
+fn no_symlinked_parents(root: &Path, rel: &Path) -> Result<()> {
+    let mut at = root.to_path_buf();
+    let parents: Vec<_> = rel.components().collect();
+    for part in &parents[..parents.len().saturating_sub(1)] {
+        at.push(part);
+        if std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
+            bail!(
+                "{} is a symlink; restore the file it leads to instead",
+                at.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Rename `path` to `dest`, never replacing an existing entry: a counter is
+/// added to the name until it is free. Returns the new path.
+fn move_aside(path: &Path, dest: &Path) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    for n in 0..1000 {
+        let candidate = if n == 0 {
+            dest.to_path_buf()
+        } else {
+            let mut name = dest.as_os_str().to_os_string();
+            name.push(format!(".{n}"));
+            PathBuf::from(name)
+        };
+        let from = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+        let to = std::ffi::CString::new(candidate.as_os_str().as_bytes())?;
+        let rc = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                from.as_ptr(),
+                libc::AT_FDCWD,
+                to.as_ptr(),
+                libc::RENAME_NOREPLACE,
+            )
+        };
+        if rc == 0 {
+            return Ok(candidate);
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EEXIST) {
+            return Err(anyhow!(
+                "rename {} to {}: {err}",
+                path.display(),
+                candidate.display()
+            ));
+        }
+    }
+    bail!("no free name for {} next to it", path.display())
 }
 
 #[cfg(test)]
