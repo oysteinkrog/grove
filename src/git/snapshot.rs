@@ -43,8 +43,22 @@ fn is_on(value: &str) -> bool {
 }
 
 /// Read the `snapshot` file once at startup. A missing file means off.
+/// Skipped when `GROVE_SNAPSHOT` is set, when the config dir is not an
+/// absolute path, or when the file is not a regular file (a FIFO would hang
+/// every start). At most 64 bytes are read.
 pub fn load_config_default(config_dir: &Path) {
-    if let Ok(value) = std::fs::read_to_string(config_dir.join(SNAPSHOT_FILE)) {
+    use std::io::Read;
+    if std::env::var_os(SNAPSHOT_ENV).is_some() || !config_dir.is_absolute() {
+        return;
+    }
+    let path = config_dir.join(SNAPSHOT_FILE);
+    if !std::fs::metadata(&path).is_ok_and(|m| m.is_file()) {
+        return;
+    }
+    let mut value = String::new();
+    if let Ok(file) = File::open(&path)
+        && file.take(64).read_to_string(&mut value).is_ok()
+    {
         let _ = CONFIG_DEFAULT.set(is_on(&value));
     }
 }
@@ -57,7 +71,9 @@ pub fn snapshot_enabled() -> bool {
     }
     match std::env::var(SNAPSHOT_ENV) {
         Ok(v) => is_on(&v),
-        Err(_) => CONFIG_DEFAULT.get().copied().unwrap_or(false),
+        // Set but not UTF-8: still an override, and not a known "on" value.
+        Err(std::env::VarError::NotUnicode(_)) => false,
+        Err(std::env::VarError::NotPresent) => CONFIG_DEFAULT.get().copied().unwrap_or(false),
     }
 }
 
