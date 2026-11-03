@@ -271,6 +271,10 @@ fn remove_worktree_dir(layout: &Layout, path: &Path) -> Result<(), String> {
     let is_linked_worktree = path.join(".git").is_file();
 
     if is_linked_worktree {
+        // The guards already ran; this repeats git's own checks.
+        if crate::git::ShellBackend::new().remove_subvolume_lane(&layout.main_repo, path, false)? {
+            return Ok(());
+        }
         return exec::git(
             &layout.main_repo,
             &["worktree", "remove", path.to_str().unwrap_or_default()],

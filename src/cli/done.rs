@@ -126,7 +126,17 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
         .ok()
         .filter(|oid| !oid.is_empty());
 
-    backend.worktree_remove(&cx.resolved.main_repo, &worktree_path, args.force)?;
+    // A lane that is a btrfs subvolume goes at once where the mount allows
+    // it; anything else, file by file as before.
+    let fast = backend
+        .remove_subvolume_lane(&cx.resolved.main_repo, &worktree_path, args.force)
+        .map_err(|e| GroveError::GitCommandFailed {
+            cmd: format!("remove subvolume lane {}", worktree_path.display()),
+            stderr: e,
+        })?;
+    if !fast {
+        backend.worktree_remove(&cx.resolved.main_repo, &worktree_path, args.force)?;
+    }
 
     if !args.keep_local {
         // Ignore error: branch may already be gone if worktree removal cleaned it up

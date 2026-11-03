@@ -472,3 +472,121 @@ fn nearest_existing(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests;
+
+impl ShellBackend {
+    /// Remove the lane at `path` when it is a btrfs subvolume and
+    /// `user_subvol_rm_allowed` is set: `btrfs subvolume delete`, which
+    /// returns at once, then only this lane's admin directory.
+    ///
+    /// Returns `Ok(false)`, having changed nothing, when the fast path does
+    /// not apply (not a subvolume, the mount option is missing, submodules).
+    /// The caller then removes the lane as before, file by file; `rmdir`
+    /// removes the empty subvolumes on the way.
+    ///
+    /// Repeats what `git worktree remove` would check, failing closed: a
+    /// locked lane is refused, and without `force` so is a lane with
+    /// modified or untracked files, or with anything in its nested
+    /// `.scratch` subvolume.
+    pub fn remove_subvolume_lane(
+        &self,
+        repo_path: &Path,
+        path: &Path,
+        force: bool,
+    ) -> Result<bool, String> {
+        if !btrfs::is_subvolume(path) {
+            return Ok(false);
+        }
+        if !btrfs::rm_allowed(path) {
+            eprintln!(
+                "note: {} is a btrfs subvolume, but user_subvol_rm_allowed is not set on its \
+                 filesystem, so it is deleted file by file",
+                path.display()
+            );
+            return Ok(false);
+        }
+        if has_submodules(path) {
+            return Ok(false);
+        }
+        let nested = self.check_subvolume_lane(repo_path, path, force)?;
+        btrfs::delete_subvolume(path, &nested).map_err(|e| e.to_string())?;
+        // The directory is gone: this removes only its admin directory.
+        self.run(
+            repo_path,
+            &[
+                "worktree",
+                "remove",
+                "--force",
+                path.to_str().unwrap_or_default(),
+            ],
+        )
+        .map_err(|e| {
+            format!(
+                "deleted {} but could not deregister it: {e}",
+                path.display()
+            )
+        })?;
+        Ok(true)
+    }
+
+    /// The checks behind [`Self::remove_subvolume_lane`]. Returns the nested
+    /// subvolumes to delete first.
+    pub(crate) fn check_subvolume_lane(
+        &self,
+        repo_path: &Path,
+        path: &Path,
+        force: bool,
+    ) -> Result<Vec<PathBuf>, String> {
+        let gitfile = std::fs::read_to_string(path.join(".git"))
+            .map_err(|e| format!("{} has no readable .git file: {e}", path.display()))?;
+        let admin = admin_dir_of(&gitfile, path).map_err(|e| e.to_string())?;
+
+        // Registered, and not locked: git needs --force twice for a locked
+        // worktree, and grove never passes that.
+        let list = self
+            .run_stdout(repo_path, &["worktree", "list", "--porcelain"])
+            .map_err(|e| e.to_string())?;
+        let entry = list
+            .split("\n\n")
+            .find(|block| {
+                block
+                    .lines()
+                    .next()
+                    .and_then(|l| l.strip_prefix("worktree "))
+                    .is_some_and(|p| Path::new(p) == path)
+            })
+            .ok_or_else(|| format!("{} is not a registered worktree", path.display()))?;
+        if entry
+            .lines()
+            .any(|l| l == "locked" || l.starts_with("locked "))
+        {
+            return Err(format!(
+                "{} is locked; unlock it with `git worktree unlock` first",
+                path.display()
+            ));
+        }
+        if !admin.join("gitdir").is_file() {
+            return Err(format!("{} has no admin gitdir file", admin.display()));
+        }
+
+        let scratch = path.join(crate::cli::new::SCRATCH_DIR);
+        if !force {
+            let status = self
+                .run_stdout(path, &["status", "--porcelain", "--untracked-files=all"])
+                .map_err(|e| format!("could not check {}: {e}", path.display()))?;
+            if !status.is_empty() {
+                return Err(format!(
+                    "{} has modified or untracked files",
+                    path.display()
+                ));
+            }
+            let busy = std::fs::read_dir(&scratch).is_ok_and(|mut d| d.next().is_some());
+            if busy {
+                return Err(format!(
+                    "{} is not empty; it may hold nested worktrees",
+                    scratch.display()
+                ));
+            }
+        }
+        Ok(vec![scratch])
+    }
+}
