@@ -376,6 +376,10 @@ pub fn parse_usage(text: &str) -> Option<Headroom> {
 /// Refuse when unallocated space plus free metadata is below the floor
 /// (`GROVE_SNAPSHOT_MIN_FREE_GIB`, default 16), or cannot be read.
 pub fn check_headroom(path: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(floor) = TEST_FLOOR_GIB.with(|f| f.get()) {
+        return headroom(path).map_or(Err("no usage".into()), |r| headroom_ok(r, floor));
+    }
     let floor_gib = std::env::var(MIN_FREE_ENV)
         .ok()
         .and_then(|v| v.parse().ok())
@@ -387,6 +391,13 @@ pub fn check_headroom(path: &Path) -> Result<(), String> {
         ));
     };
     headroom_ok(room, floor_gib)
+}
+
+/// Test hook: the headroom floor for this thread only.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static TEST_FLOOR_GIB: std::cell::Cell<Option<u64>> =
+        const { std::cell::Cell::new(None) };
 }
 
 /// The rule behind [`check_headroom`].

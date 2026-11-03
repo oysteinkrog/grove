@@ -1,0 +1,474 @@
+//! Lanes as btrfs snapshots.
+//!
+//! A reflink copy of a lane makes one new inode and one set of extent
+//! references per file: about a million entries for a big lane, and enough
+//! metadata load to freeze the desktop. A snapshot of a subvolume shares the
+//! whole tree instead. When the source (a base checkout, or a lane that is a
+//! subvolume) is a subvolume, a new lane is a snapshot of it plus a small
+//! `git reset --hard`.
+//!
+//! Off by default. `GROVE_SNAPSHOT=1` turns it on.
+//!
+//! The order of steps guards one hazard above all: a fresh snapshot's `.git`
+//! file still points at the source's admin directory, so any git command run
+//! in it would change the source's index and HEAD. The snapshot is made in
+//! `<work_dir>/.grove/staging/<name>.<pid>`, its `.git` is replaced, and only
+//! then is it renamed to the lane path and git run in it.
+
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use super::btrfs::{self, BtrfsError};
+use super::shell_backend::{ShellBackend, has_submodules};
+use crate::error::GroveError;
+
+/// `GROVE_SNAPSHOT=1` (or `on`, `true`, `always`) makes new lanes btrfs
+/// snapshots where the source allows it. Unset or anything else: off.
+pub const SNAPSHOT_ENV: &str = "GROVE_SNAPSHOT";
+
+/// True when snapshot lanes are switched on.
+pub fn snapshot_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(on) = FORCE_ENABLED.with(|f| f.get()) {
+        return on;
+    }
+    std::env::var(SNAPSHOT_ENV).is_ok_and(|v| {
+        matches!(
+            v.to_ascii_lowercase().as_str(),
+            "1" | "on" | "true" | "always"
+        )
+    })
+}
+
+/// Directory that holds snapshots until their `.git` is fixed.
+pub fn staging_dir(work_dir: &Path) -> PathBuf {
+    work_dir.join(".grove").join("staging")
+}
+
+/// How the new worktree is checked out.
+#[derive(Debug, Clone, Copy)]
+pub enum Checkout<'a> {
+    /// `-b <branch> <start>`
+    NewBranch { branch: &'a str, start: &'a str },
+    /// An existing branch.
+    Branch(&'a str),
+    /// `--detach <rev>`, for base checkouts.
+    Detach(&'a str),
+}
+
+impl Checkout<'_> {
+    fn add_args<'b>(&'b self, target: &'b str) -> Vec<&'b str> {
+        // Locked until the snapshot is in place, so a `git worktree prune`
+        // meanwhile cannot drop the registration of a lane whose directory
+        // does not exist yet.
+        let mut args = vec![
+            "worktree",
+            "add",
+            "--no-checkout",
+            "--lock",
+            "--reason",
+            "grove: snapshot in progress",
+        ];
+        match self {
+            Checkout::NewBranch { branch, start } => {
+                args.extend(["-b", branch, target, start]);
+            }
+            Checkout::Branch(branch) => args.extend([target, branch]),
+            Checkout::Detach(rev) => args.extend(["--detach", target, rev]),
+        }
+        args
+    }
+}
+
+/// What the probe found: everything the snapshot needs from the source.
+#[derive(Debug)]
+pub struct Probe {
+    source_index: PathBuf,
+}
+
+fn failed(cmd: impl Into<String>, stderr: impl Into<String>) -> GroveError {
+    GroveError::GitCommandFailed {
+        cmd: cmd.into(),
+        stderr: stderr.into(),
+    }
+}
+
+/// Test hook: fail at a named step.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FAIL_AT: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Test hook: turn snapshots on or off for this thread only, without
+/// touching the environment other tests read.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FORCE_ENABLED: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn fail_point(_step: &'static str) -> Result<(), GroveError> {
+    #[cfg(test)]
+    if FAIL_AT.with(|f| f.get()) == Some(_step) {
+        return Err(failed(format!("injected failure at {_step}"), "test"));
+    }
+    Ok(())
+}
+
+impl ShellBackend {
+    /// Check, without changing anything, whether a lane at `target` can be a
+    /// snapshot of `source`. `Err` holds the reason it cannot; the caller then
+    /// uses the reflink copy or a plain checkout.
+    pub fn snapshot_probe(&self, source: &Path, target: &Path) -> Result<Probe, String> {
+        if !cfg!(target_os = "linux") {
+            return Err("not Linux".into());
+        }
+        if !snapshot_enabled() {
+            return Err(format!("{SNAPSHOT_ENV} is not on"));
+        }
+        if !btrfs::is_own_subvolume(source) {
+            return Err(format!(
+                "{} is not a btrfs subvolume owned by this user",
+                source.display()
+            ));
+        }
+        if !source.join(".git").is_file() {
+            return Err(format!("{} is not a linked worktree", source.display()));
+        }
+        let parent = target.parent().ok_or("target has no parent")?;
+        let parent_dir = nearest_existing(parent);
+        if !btrfs::same_filesystem(source, &parent_dir) {
+            return Err("source and target are on different filesystems".into());
+        }
+        if has_submodules(source) {
+            return Err("the source has submodules".into());
+        }
+        if !btrfs::btrfs_available() {
+            return Err("the btrfs command is not on PATH".into());
+        }
+        let git_path = |what: &str| {
+            self.run_stdout(
+                source,
+                &["rev-parse", "--path-format=absolute", "--git-path", what],
+            )
+            .map(PathBuf::from)
+            .map_err(|e| e.to_string())
+        };
+        // Per-worktree config and index state a copied index would carry
+        // without the config that explains it.
+        if git_path("config.worktree")?.exists() {
+            return Err("the source has per-worktree config (config.worktree)".into());
+        }
+        if git_path("info/sparse-checkout")?.exists() {
+            return Err("the source has a sparse checkout".into());
+        }
+        for key in ["core.splitIndex", "core.fsmonitor"] {
+            let value = self
+                .run_stdout(source, &["config", "--get", key])
+                .unwrap_or_default();
+            if !value.is_empty() && value != "false" {
+                return Err(format!("{key} is set"));
+            }
+        }
+        let flags = self
+            .run_stdout(source, &["ls-files", "-v"])
+            .map_err(|e| e.to_string())?;
+        if flags
+            .lines()
+            .any(|l| l.starts_with('S') || l.starts_with(|c: char| c.is_ascii_lowercase()))
+        {
+            return Err("the source index has skip-worktree or assume-unchanged entries".into());
+        }
+        Ok(Probe {
+            source_index: git_path("index")?,
+        })
+    }
+
+    /// Make the worktree `target` as a snapshot of `source`, after
+    /// [`Self::snapshot_probe`] passed. `source_lock` is held until the
+    /// snapshot and the index copy are both done.
+    ///
+    /// On failure nothing is left behind but the branch, which is kept as
+    /// after any failed `grove new`. A snapshot that fails for lack of space
+    /// is an error, never a reason to fall back to a full copy.
+    #[allow(clippy::too_many_arguments)]
+    pub fn worktree_add_snapshot(
+        &self,
+        repo_path: &Path,
+        source: &Path,
+        target: &Path,
+        checkout: Checkout<'_>,
+        staging: &Path,
+        probe: Probe,
+        source_lock: Option<File>,
+    ) -> Result<(), GroveError> {
+        let parent = target
+            .parent()
+            .ok_or_else(|| failed("snapshot", "target has no parent"))?;
+        for dir in [parent, staging] {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| failed(format!("mkdir -p {}", dir.display()), e.to_string()))?;
+        }
+        if target.exists() {
+            return Err(failed(
+                "snapshot",
+                format!("{} already exists", target.display()),
+            ));
+        }
+        sweep_staging(staging);
+        btrfs::check_headroom(parent).map_err(|e| failed("snapshot headroom", e))?;
+
+        // The reset after the snapshot can rewrite many files when the source
+        // is far from the new branch: serialize it with other copies.
+        let copy_lock =
+            crate::machine_lock::MachineLock::acquire("copy", &crate::machine_lock::tag_of(target))
+                .map_err(|e| failed("take the grove copy lock", e))?;
+
+        let target_str = target
+            .to_str()
+            .ok_or_else(|| failed("snapshot", "path is not UTF-8"))?;
+        self.run(repo_path, &checkout.add_args(target_str))?;
+
+        let name = target
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let staged = staging.join(format!("{name}.{}", std::process::id()));
+        let result = self.fill_by_snapshot(source, target, &staged, &probe, source_lock);
+        if let Err(e) = result {
+            let cleanup = self.roll_back(repo_path, target, &staged);
+            drop(copy_lock);
+            return Err(failed(
+                format!("snapshot {} -> {}", source.display(), target.display()),
+                format!(
+                    "{e}\n{cleanup} The branch was kept. Unset {SNAPSHOT_ENV} to copy instead."
+                ),
+            ));
+        }
+        drop(copy_lock);
+        Ok(())
+    }
+
+    fn fill_by_snapshot(
+        &self,
+        source: &Path,
+        target: &Path,
+        staged: &Path,
+        probe: &Probe,
+        source_lock: Option<File>,
+    ) -> Result<(), GroveError> {
+        // 1. Keep the gitfile git wrote, then clear the way for the rename.
+        let dot_git = target.join(".git");
+        let gitfile = std::fs::read_to_string(&dot_git)
+            .map_err(|e| failed(format!("read {}", dot_git.display()), e.to_string()))?;
+        let admin = admin_dir_of(&gitfile, target)?;
+        std::fs::remove_file(&dot_git)
+            .and_then(|_| std::fs::remove_dir(target))
+            .map_err(|e| failed(format!("clear {}", target.display()), e.to_string()))?;
+        fail_point("after-add")?;
+
+        // 2. Snapshot and index copy, both under the source lock, so files
+        //    and index come from the same state.
+        btrfs::snapshot(source, staged, false).map_err(|e| match e {
+            BtrfsError::NoSpace(m) => failed("btrfs subvolume snapshot", m),
+            BtrfsError::Failed(m) => failed("btrfs subvolume snapshot", m),
+        })?;
+        fail_point("after-snapshot")?;
+        if probe.source_index.exists() {
+            let out = Command::new("cp")
+                .arg("--reflink=auto")
+                .arg(&probe.source_index)
+                .arg(admin.join("index"))
+                .output()
+                .map_err(|e| failed("cp index", e.to_string()))?;
+            if !out.status.success() {
+                return Err(failed(
+                    "cp index",
+                    String::from_utf8_lossy(&out.stderr).into_owned(),
+                ));
+            }
+        }
+        drop(source_lock);
+        fail_point("after-index")?;
+
+        // 3. Point the copy at its own admin directory. Nothing has run in
+        //    it yet.
+        let tmp = staged.join(".git.grove-new");
+        std::fs::write(&tmp, &gitfile)
+            .and_then(|_| std::fs::rename(&tmp, staged.join(".git")))
+            .map_err(|e| failed(format!("write {}/.git", staged.display()), e.to_string()))?;
+        fail_point("after-gitfile")?;
+
+        // 4. Nested worktrees and subvolumes.
+        fix_nested_scratch(staged)?;
+
+        // 5. Publish.
+        std::fs::rename(staged, target).map_err(|e| {
+            failed(
+                format!("rename {} {}", staged.display(), target.display()),
+                e.to_string(),
+            )
+        })?;
+        fail_point("after-rename")?;
+        self.run(
+            target,
+            &["worktree", "unlock", target.to_str().unwrap_or_default()],
+        )?;
+
+        // 6. The snapshot keeps inode numbers and times, so the refresh
+        //    should match most entries by stat data alone. It exits non-zero
+        //    when the source had edits; the reset puts those right.
+        let _ = self.run(target, &["update-index", "-q", "--refresh"]);
+        self.run(target, &["reset", "--hard", "-q", "HEAD"])?;
+        self.run(target, &["clean", "-fdq"])?;
+        fail_point("after-reset")?;
+        Ok(())
+    }
+
+    /// Undo a failed snapshot lane: the staged or published subvolume, then
+    /// this lane's admin directory only. Returns a sentence for the error.
+    fn roll_back(&self, repo_path: &Path, target: &Path, staged: &Path) -> String {
+        let mut problems = Vec::new();
+        for path in [staged, target] {
+            if btrfs::is_subvolume(path)
+                && let Err(e) = btrfs::delete_subvolume(path, &[path.join(".scratch")])
+            {
+                problems.push(format!("could not delete {}: {e}", path.display()));
+            }
+        }
+        // `worktree remove --force` on a registered worktree whose directory
+        // is gone removes only its admin directory. Never a global prune.
+        if !target.exists()
+            && let Err(e) = self.run(
+                repo_path,
+                &[
+                    "worktree",
+                    "remove",
+                    "--force",
+                    "--force",
+                    target.to_str().unwrap_or_default(),
+                ],
+            )
+        {
+            problems.push(format!("could not deregister {}: {e}", target.display()));
+        } else if target.exists() {
+            problems.push(format!("{} is still there", target.display()));
+        }
+        if problems.is_empty() {
+            "The half-made lane was removed.".into()
+        } else {
+            problems.join("; ")
+        }
+    }
+}
+
+/// The admin directory a gitfile names, checked: an absolute path that
+/// exists and whose `gitdir` file points back at `<target>/.git`.
+fn admin_dir_of(gitfile: &str, target: &Path) -> Result<PathBuf, GroveError> {
+    let bad = |why: String| failed(format!("check {}/.git", target.display()), why);
+    let admin = gitfile
+        .trim()
+        .strip_prefix("gitdir: ")
+        .map(PathBuf::from)
+        .ok_or_else(|| bad(format!("unexpected gitfile: {gitfile:?}")))?;
+    if !admin.is_absolute() || !admin.is_dir() {
+        return Err(bad(format!(
+            "admin directory {} is not usable",
+            admin.display()
+        )));
+    }
+    let back = std::fs::read_to_string(admin.join("gitdir"))
+        .map_err(|e| bad(format!("read {}/gitdir: {e}", admin.display())))?;
+    if Path::new(back.trim()) != target.join(".git") {
+        return Err(bad(format!(
+            "{}/gitdir points at {}, not at this lane",
+            admin.display(),
+            back.trim()
+        )));
+    }
+    Ok(admin)
+}
+
+/// A snapshot holds an empty placeholder for each nested subvolume, and a
+/// copy of each nested worktree, whose `.git` still names the original's
+/// admin directory. Remove those gitfiles, and give the copy its own empty
+/// `.scratch` subvolume when the source's `.scratch` was empty, so forks of
+/// it never carry nested worktrees.
+fn fix_nested_scratch(staged: &Path) -> Result<(), GroveError> {
+    let scratch = staged.join(crate::cli::new::SCRATCH_DIR);
+    if !scratch.is_dir() {
+        return Ok(());
+    }
+    remove_nested_gitfiles(&scratch)
+        .map_err(|e| failed(format!("clean {}", scratch.display()), e.to_string()))?;
+    let empty = std::fs::read_dir(&scratch)
+        .map(|mut d| d.next().is_none())
+        .unwrap_or(false);
+    if empty && !btrfs::is_subvolume(&scratch) {
+        std::fs::remove_dir(&scratch)
+            .map_err(|e| failed(format!("rmdir {}", scratch.display()), e.to_string()))?;
+        btrfs::create_subvolume(&scratch)
+            .map_err(|e| failed("btrfs subvolume create", e.to_string()))?;
+    }
+    Ok(())
+}
+
+fn remove_nested_gitfiles(dir: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let kind = entry.file_type()?;
+        if entry.file_name() == ".git" && kind.is_file() {
+            std::fs::remove_file(entry.path())?;
+        } else if kind.is_dir() && entry.file_name() != ".git" {
+            remove_nested_gitfiles(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+/// Delete staging entries left by grove runs that died (their pid is gone).
+fn sweep_staging(staging: &Path) {
+    let Ok(entries) = std::fs::read_dir(staging) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(pid) = name
+            .rsplit_once('.')
+            .and_then(|(_, p)| p.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid == std::process::id() || Path::new(&format!("/proc/{pid}")).exists() {
+            continue;
+        }
+        let path = entry.path();
+        eprintln!("Removing {} left by an earlier grove run", path.display());
+        let removed = if btrfs::is_subvolume(&path) {
+            btrfs::delete_subvolume(&path, &[path.join(".scratch")]).map(|_| ())
+        } else {
+            std::fs::remove_dir_all(&path).map_err(|e| BtrfsError::Failed(e.to_string()))
+        };
+        if let Err(e) = removed {
+            eprintln!("warning: could not remove {}: {e}", path.display());
+        }
+    }
+}
+
+fn nearest_existing(path: &Path) -> PathBuf {
+    let mut p = path;
+    loop {
+        if p.exists() {
+            return p.to_path_buf();
+        }
+        match p.parent() {
+            Some(parent) => p = parent,
+            None => return path.to_path_buf(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;
