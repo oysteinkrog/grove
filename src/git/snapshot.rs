@@ -241,7 +241,11 @@ impl ShellBackend {
         let journal = journal_path(&staged);
         let result = std::fs::write(&journal, format!("{}\n", target.display()))
             .map_err(|e| failed(format!("write {}", journal.display()), e.to_string()))
-            .and_then(|_| self.fill_by_snapshot(source, target, &staged, &probe, source_lock));
+            .and_then(|_| {
+                // Lanes get their own empty .scratch subvolume; bases do not.
+                let scratch = !matches!(checkout, Checkout::Detach(_));
+                self.fill_by_snapshot(source, target, &staged, &probe, source_lock, scratch)
+            });
         if let Err(e) = result {
             let cleanup = self.roll_back(repo_path, target, &staged);
             // Kept when the rollback was incomplete, so the next run retries.
@@ -268,6 +272,7 @@ impl ShellBackend {
         staged: &Path,
         probe: &Probe,
         source_lock: Option<File>,
+        scratch_subvolume: bool,
     ) -> Result<(), GroveError> {
         // 1. Keep the gitfile git wrote, then clear the way for the rename.
         let dot_git = target.join(".git");
@@ -318,7 +323,7 @@ impl ShellBackend {
         fail_point("after-gitfile")?;
 
         // 4. Nested worktrees and subvolumes.
-        fix_nested_scratch(staged)?;
+        fix_nested_scratch(staged, scratch_subvolume)?;
 
         // 5. Publish.
         std::fs::rename(staged, target).map_err(|e| {
@@ -411,17 +416,24 @@ fn admin_dir_of(gitfile: &str, target: &Path) -> Result<PathBuf, GroveError> {
 /// copy of each nested worktree, whose `.git` still names the original's
 /// admin directory. Remove those gitfiles, and give the copy its own empty
 /// `.scratch` subvolume when the source's `.scratch` was empty, so forks of
-/// it never carry nested worktrees.
-fn fix_nested_scratch(staged: &Path) -> Result<(), GroveError> {
+/// it never carry nested worktrees. With `make`, a copy that has no
+/// `.scratch` gets one too, so every snapshot lane has it.
+fn fix_nested_scratch(staged: &Path, make: bool) -> Result<(), GroveError> {
     let scratch = staged.join(crate::cli::new::SCRATCH_DIR);
+    let create = || {
+        btrfs::create_subvolume(&scratch)
+            .map_err(|e| failed("btrfs subvolume create", e.to_string()))
+    };
     match std::fs::symlink_metadata(&scratch) {
         Ok(m) if m.file_type().is_symlink() => {
             // Never follow it: it may point at real worktrees. Drop the link.
-            return std::fs::remove_file(&scratch)
-                .map_err(|e| failed(format!("rm {}", scratch.display()), e.to_string()));
+            std::fs::remove_file(&scratch)
+                .map_err(|e| failed(format!("rm {}", scratch.display()), e.to_string()))?;
+            return if make { create() } else { Ok(()) };
         }
         Ok(m) if m.is_dir() => {}
-        _ => return Ok(()),
+        Ok(_) => return Ok(()),
+        Err(_) => return if make { create() } else { Ok(()) },
     }
     remove_nested_gitfiles(&scratch)
         .map_err(|e| failed(format!("clean {}", scratch.display()), e.to_string()))?;
@@ -606,6 +618,11 @@ impl ShellBackend {
             return Ok(false);
         }
         if !btrfs::rm_allowed(path) {
+            // Once per run: gc may remove many lanes.
+            static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                return Ok(false);
+            }
             eprintln!(
                 "note: {} is a btrfs subvolume, but user_subvol_rm_allowed is not set on its \
                  filesystem, so it is deleted file by file",

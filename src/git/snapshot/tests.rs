@@ -162,6 +162,14 @@ fn snapshot_lane_matches_branch_and_leaves_the_source_alone() {
         !list.contains("locked"),
         "the lane is unlocked once made: {list}"
     );
+    assert!(
+        btrfs::is_subvolume(&target.join(".scratch")),
+        "every lane gets one"
+    );
+    assert_eq!(
+        std::fs::read_dir(target.join(".scratch")).unwrap().count(),
+        0
+    );
     assert_eq!(
         std::fs::read_dir(staging_dir(&f.work_dir)).unwrap().count(),
         0
@@ -249,8 +257,9 @@ fn a_fork_of_a_lane_gets_its_own_empty_scratch_subvolume() {
     let Some(f) = fixture() else { return };
     let lane = f.work_dir.join(".scratch").join("src");
     make(&f, &lane, "src", "main").unwrap();
-    // The source lane has a nested worktree in its own .scratch subvolume.
-    btrfs::create_subvolume(&lane.join(".scratch")).unwrap();
+    // The source lane has a nested worktree in its own .scratch subvolume,
+    // which every snapshot lane gets.
+    assert!(btrfs::is_subvolume(&lane.join(".scratch")));
     let nested = lane.join(".scratch").join("inner");
     git(
         &f.main,
@@ -329,7 +338,7 @@ fn subvolume_lane_checks_fail_closed() {
 
     std::fs::create_dir_all(lane.join(".scratch/inner")).unwrap();
     assert!(backend.check_subvolume_lane(&f.main, &lane, false).is_err());
-    std::fs::remove_dir_all(lane.join(".scratch")).unwrap();
+    std::fs::remove_dir(lane.join(".scratch/inner")).unwrap();
 
     git(&f.main, &["worktree", "lock", lane.to_str().unwrap()]);
     let err = backend
@@ -353,16 +362,16 @@ fn git_worktree_remove_deletes_a_subvolume_lane() {
     let Some(f) = fixture() else { return };
     let lane = f.work_dir.join(".scratch").join("gone");
     make(&f, &lane, "gone", "main").unwrap();
-    btrfs::create_subvolume(&lane.join(".scratch")).unwrap();
+    assert!(btrfs::is_subvolume(&lane.join(".scratch")));
     std::fs::write(lane.join("cache.db"), "ignored\n").unwrap();
+    btrfs::TEST_RM_ALLOWED.with(|c| c.set(Some(false)));
     let backend = ShellBackend::new();
-    if !btrfs::rm_allowed(&lane) {
-        assert!(
-            !backend
-                .remove_subvolume_lane(&f.main, &lane, false)
-                .unwrap()
-        );
-    }
+    assert!(
+        !backend
+            .remove_subvolume_lane(&f.main, &lane, false)
+            .unwrap()
+    );
+    btrfs::TEST_RM_ALLOWED.with(|c| c.set(None));
     git(
         &f.main,
         &["worktree", "remove", "--force", lane.to_str().unwrap()],
@@ -370,6 +379,68 @@ fn git_worktree_remove_deletes_a_subvolume_lane() {
     assert!(!lane.exists());
     let list = git(&f.main, &["worktree", "list", "--porcelain"]);
     assert!(!list.contains(lane.to_str().unwrap()));
+}
+
+/// With user_subvol_rm_allowed (skipped where it is not set): a clean lane
+/// goes with `btrfs subvolume delete`, its .scratch subvolume first, and only
+/// its own registration goes with it.
+#[test]
+fn fast_delete_removes_the_lane_and_only_its_registration() {
+    let _on = On::new();
+    let Some(f) = fixture() else { return };
+    if !btrfs::rm_allowed(&f.work_dir) {
+        eprintln!("skipping: user_subvol_rm_allowed is not set");
+        return;
+    }
+    let backend = ShellBackend::new();
+    let lane = f.work_dir.join(".scratch").join("fast");
+    let other = f.work_dir.join(".scratch").join("other");
+    make(&f, &lane, "fast", "feature").unwrap();
+    make(&f, &other, "other", "main").unwrap();
+    std::fs::write(lane.join("cache.db"), "ignored build output\n").unwrap();
+
+    // Refused while dirty, untracked or locked; nothing deleted.
+    std::fs::write(lane.join("a.txt"), "edit\n").unwrap();
+    assert!(
+        backend
+            .remove_subvolume_lane(&f.main, &lane, false)
+            .is_err()
+    );
+    git(&lane, &["checkout", "--", "a.txt"]);
+    std::fs::write(lane.join("new.txt"), "x").unwrap();
+    assert!(
+        backend
+            .remove_subvolume_lane(&f.main, &lane, false)
+            .is_err()
+    );
+    std::fs::remove_file(lane.join("new.txt")).unwrap();
+    git(&f.main, &["worktree", "lock", lane.to_str().unwrap()]);
+    assert!(backend.remove_subvolume_lane(&f.main, &lane, true).is_err());
+    git(&f.main, &["worktree", "unlock", lane.to_str().unwrap()]);
+    assert!(lane.join("a.txt").exists());
+
+    // A nested subvolume inside .scratch: --force deletes it too.
+    btrfs::create_subvolume(&lane.join(".scratch").join("inner")).unwrap();
+    assert!(
+        backend
+            .remove_subvolume_lane(&f.main, &lane, false)
+            .is_err()
+    );
+    assert!(backend.remove_subvolume_lane(&f.main, &lane, true).unwrap());
+    assert!(!lane.exists());
+    let list = git(&f.main, &["worktree", "list", "--porcelain"]);
+    assert!(!list.contains(lane.to_str().unwrap()), "{list}");
+    assert!(list.contains(other.to_str().unwrap()));
+    git(&f.main, &["rev-parse", "--verify", "fast"]);
+    assert_eq!(git(&other, &["status", "--porcelain"]), "");
+
+    // The plain clean case, no force.
+    assert!(
+        backend
+            .remove_subvolume_lane(&f.main, &other, false)
+            .unwrap()
+    );
+    assert!(!other.exists());
 }
 
 /// A run that died after registering the lane, before it had a directory,
