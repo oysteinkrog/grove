@@ -52,8 +52,15 @@ pub fn apply(finding: &Finding, layout: &Layout, grove_dir: &Path) -> Result<Str
 fn drop_registry_entry(tag: &str, grove_dir: &Path) -> Result<String, String> {
     // Under registry.lock on the file as it is now, so an entry another
     // grove command adds meanwhile is kept.
-    Registry::remove_on_disk(grove_dir, tag).map_err(|e| format!("could not drop '{tag}': {e}"))?;
-    Ok(format!("dropped registry entry '{tag}'"))
+    // Only while its directory is still missing: a new lane registered under
+    // the same tag since the scan has a directory and is kept.
+    match Registry::remove_on_disk_if(grove_dir, tag, |p| !p.path.exists()) {
+        Ok(Some(_)) => Ok(format!("dropped registry entry '{tag}'")),
+        Ok(None) => Err(format!(
+            "'{tag}' is gone or has a directory again since the scan; left in place"
+        )),
+        Err(e) => Err(format!("could not drop '{tag}': {e}")),
+    }
 }
 
 /// Remove a worktree directory, then its local branch, then its registry entry.
@@ -79,7 +86,7 @@ fn remove_tree(
 
     // The wait above can be long. Check the finding still holds before the
     // guards, and act on what is there now.
-    still_eligible(finding, grove_dir, tag)?;
+    let expected = still_eligible(finding, grove_dir, tag)?;
 
     let safety = guards::inspect_tree(path).map_err(|e| {
         format!(
@@ -105,8 +112,16 @@ fn remove_tree(
         ));
     }
 
+    if let (Some(scanned), Some(now)) = (branch, safety.branch.as_deref())
+        && scanned != now
+    {
+        return Err(format!(
+            "{} switched from branch {scanned} to {now} since the scan; left in place",
+            path.display()
+        ));
+    }
+
     remove_worktree_dir(layout, path)?;
-    drop(delete_lock);
 
     let mut event = crate::events::Event::now("gc-remove", path);
     event.tag = tag.map(str::to_string);
@@ -115,43 +130,81 @@ fn remove_tree(
 
     let mut message = format!("removed {}", path.display());
 
-    if let Some(branch) = branch {
-        let sha = head.map(str::to_string).unwrap_or_else(|| {
-            safety
-                .head
-                .clone()
-                .unwrap_or_else(|| "unknown-sha".to_string())
-        });
-        match exec::git(
-            &layout.main_repo,
-            &["branch", "-D", branch],
-            QUICK_GIT_TIMEOUT,
-        ) {
-            Ok(_) => {
-                log_branch_deletion(layout, path, branch, &sha)?;
-                message.push_str(&format!(" and deleted branch {branch} ({sha})"));
-            }
-            Err(e) => {
-                message.push_str(&format!("; branch {branch} was left in place ({e})"));
-            }
-        }
-    }
-
-    if let Some(tag) = tag {
-        match Registry::remove_on_disk(grove_dir, tag) {
-            Ok(_) => message.push_str(&format!("; deregistered '{tag}'")),
-            Err(crate::registry::RegistryError::TagNotFound(_)) => {}
+    // Deregister while the lock is still held, and only the entry that was
+    // checked: a tag registered again for a new lane is kept.
+    if let (Some(tag), Some(expected)) = (tag, &expected) {
+        match Registry::remove_on_disk_if(grove_dir, tag, |p| p.same_lane(expected)) {
+            Ok(Some(_)) => message.push_str(&format!("; deregistered '{tag}'")),
+            Ok(None) => {}
             Err(e) => return Err(format!("could not write the registry: {e}")),
         }
     }
 
+    if let Some(branch) = branch {
+        message.push_str(&delete_checked_branch(
+            layout,
+            path,
+            branch,
+            safety.head.as_deref(),
+        )?);
+    }
+
+    drop(delete_lock);
     Ok(message)
+}
+
+/// Delete `branch`, but only when its tip is still `checked`, the commit the
+/// guards found safe. A branch that moved, or a tree whose HEAD was unknown,
+/// keeps its branch. Returns the text to add to the gc message.
+fn delete_checked_branch(
+    layout: &Layout,
+    path: &Path,
+    branch: &str,
+    checked: Option<&str>,
+) -> Result<String, String> {
+    let Some(checked) = checked else {
+        return Ok(format!(
+            "; branch {branch} was left in place (its commit could not be checked)"
+        ));
+    };
+    let tip = exec::git(
+        &layout.main_repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("refs/heads/{branch}"),
+        ],
+        QUICK_GIT_TIMEOUT,
+    )
+    .map(|t| t.trim().to_string())
+    .unwrap_or_default();
+    if tip != checked {
+        return Ok(format!(
+            "; branch {branch} was left in place (its tip is not the checked commit {checked})"
+        ));
+    }
+    match exec::git(
+        &layout.main_repo,
+        &["branch", "-D", branch],
+        QUICK_GIT_TIMEOUT,
+    ) {
+        Ok(_) => {
+            log_branch_deletion(layout, path, branch, checked)?;
+            Ok(format!(" and deleted branch {branch} ({checked})"))
+        }
+        Err(e) => Ok(format!("; branch {branch} was left in place ({e})")),
+    }
 }
 
 /// Fail when the registry changed since the scan in a way that makes the
 /// finding wrong: a registered lane gone, moved, frozen, or given a later
 /// expiry; an unregistered tree registered (adopted) meanwhile.
-fn still_eligible(finding: &Finding, grove_dir: &Path, tag: Option<&str>) -> Result<(), String> {
+fn still_eligible(
+    finding: &Finding,
+    grove_dir: &Path,
+    tag: Option<&str>,
+) -> Result<Option<crate::registry::Project>, String> {
     let path = &finding.path;
     let registry =
         Registry::load(grove_dir).map_err(|e| format!("could not read the registry: {e}"))?;
@@ -177,14 +230,15 @@ fn still_eligible(finding: &Finding, grove_dir: &Path, tag: Option<&str>) -> Res
             {
                 return changed("had its expiry extended");
             }
+            Ok(Some(project.clone()))
         }
         None => {
             if registry.projects.values().any(|p| &p.path == path) {
                 return changed("was registered");
             }
+            Ok(None)
         }
     }
-    Ok(())
 }
 
 /// Ask git to remove the worktree. Directories that are not linked worktrees
@@ -424,6 +478,76 @@ mod tests {
         let err = apply(&ephemeral_finding(None, &tree), &layout, &grove_dir).unwrap_err();
         assert!(err.contains("was registered"), "{err}");
         assert!(tree.exists());
+    }
+
+    #[test]
+    fn a_stale_entry_whose_directory_came_back_is_kept() {
+        let dir = TempDir::new().unwrap();
+        let grove_dir = dir.path().join(".grove");
+        let lane = dir.path().join("reused");
+        std::fs::create_dir_all(&lane).unwrap();
+        Registry::insert_on_disk(&grove_dir, "reused".to_string(), project(&lane)).unwrap();
+        let layout = Layout {
+            work_dir: dir.path().to_path_buf(),
+            main_repo: dir.path().join("master"),
+        };
+        let finding = Finding::new(Category::StaleRegistryEntry, "reused", &lane).remedy(
+            Remedy::DropRegistryEntry {
+                tag: "reused".to_string(),
+            },
+        );
+        let err = apply(&finding, &layout, &grove_dir).unwrap_err();
+        assert!(err.contains("left in place"), "{err}");
+        assert!(
+            Registry::load(&grove_dir)
+                .unwrap()
+                .projects
+                .contains_key("reused")
+        );
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn a_branch_is_deleted_only_at_the_checked_commit() {
+        let dir = TempDir::new().unwrap();
+        let main = dir.path().join("master");
+        std::fs::create_dir_all(&main).unwrap();
+        git_in(&main, &["init", "-q", "-b", "main"]);
+        git_in(&main, &["config", "user.email", "t@t.com"]);
+        git_in(&main, &["config", "user.name", "T"]);
+        git_in(&main, &["commit", "-q", "--allow-empty", "-m", "one"]);
+        let checked = git_in(&main, &["rev-parse", "HEAD"]);
+        git_in(&main, &["branch", "moved"]);
+        git_in(&main, &["branch", "kept"]);
+        git_in(&main, &["commit", "-q", "--allow-empty", "-m", "two"]);
+        // `moved` now points past the checked commit.
+        git_in(&main, &["branch", "-f", "moved", "HEAD"]);
+        let layout = Layout {
+            work_dir: dir.path().to_path_buf(),
+            main_repo: main.clone(),
+        };
+        let lane = dir.path().join("lane");
+
+        let msg = delete_checked_branch(&layout, &lane, "moved", Some(&checked)).unwrap();
+        assert!(msg.contains("left in place"), "{msg}");
+        git_in(&main, &["rev-parse", "--verify", "refs/heads/moved"]);
+
+        let msg = delete_checked_branch(&layout, &lane, "kept", None).unwrap();
+        assert!(msg.contains("left in place"), "{msg}");
+
+        let msg = delete_checked_branch(&layout, &lane, "kept", Some(&checked)).unwrap();
+        assert!(msg.contains("deleted branch kept"), "{msg}");
+        assert_eq!(git_in(&main, &["branch", "--list", "kept"]), "");
     }
 
     #[test]

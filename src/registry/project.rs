@@ -34,6 +34,12 @@ impl Project {
     /// Whether the project's TTL has elapsed as of `now`. Always `false` for
     /// durable (non-ephemeral) projects. Expiry is evaluated lazily by callers
     /// (e.g. `grove list`, `grove gc`) — nothing fires at the expiry instant.
+    /// True when `other` is the same lane: same path, branch and creation
+    /// time. A tag registered again for a new lane is not the same lane.
+    pub fn same_lane(&self, other: &Project) -> bool {
+        self.path == other.path && self.branch == other.branch && self.created == other.created
+    }
+
     pub fn is_expired(&self, now: OffsetDateTime) -> bool {
         self.expires_at.is_some_and(|expires_at| expires_at <= now)
     }

@@ -101,17 +101,28 @@ impl Registry {
         Ok(registry)
     }
 
-    /// Remove one project from the registry file. Holds `registry.lock` and
-    /// reads the file again first, so an entry another grove command added
-    /// since this one started is kept. Returns the removed project.
-    pub fn remove_on_disk(grove_dir: &Path, tag: &str) -> Result<Project, RegistryError> {
+    /// Remove one project from the registry file, but only when the entry on
+    /// disk is still the one the caller checked (`is_expected` says so).
+    /// Holds `registry.lock` and reads the file again first, so entries other
+    /// grove commands added meanwhile are kept. A tag that
+    /// was dropped and registered again for a new lane meanwhile is kept.
+    /// Returns the removed project, or `None` when the tag is gone or names
+    /// another lane now.
+    pub fn remove_on_disk_if(
+        grove_dir: &Path,
+        tag: &str,
+        is_expected: impl FnOnce(&Project) -> bool,
+    ) -> Result<Option<Project>, RegistryError> {
         fs::create_dir_all(grove_dir)?;
         let lock = fs::File::create(grove_dir.join("registry.lock"))?;
         lock.lock()?;
         let mut registry = Self::load(grove_dir)?;
+        if !registry.projects.get(tag).is_some_and(is_expected) {
+            return Ok(None);
+        }
         let project = registry.remove(tag)?;
         registry.save(grove_dir)?;
-        Ok(project)
+        Ok(Some(project))
     }
 
     pub fn remove(&mut self, tag: &str) -> Result<Project, RegistryError> {

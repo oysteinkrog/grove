@@ -68,6 +68,7 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
         .get(&tag)
         .ok_or_else(|| GroveError::WorktreeNotFound(std::path::PathBuf::from(&tag)))?;
 
+    let checked = project.clone();
     let worktree_path = project.path.clone();
     let branch = project.branch.clone();
     let event = crate::events::Event::for_project("done", &cx.id, &tag, project);
@@ -104,12 +105,19 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
     }
 
     backend.worktree_remove(&cx.resolved.main_repo, &worktree_path, args.force)?;
-    drop(delete_lock);
+
+    // Deregister while the lock is still held, and only the entry checked
+    // above: a tag that was dropped and registered again for a new lane
+    // meanwhile is kept. An entry already gone is fine: the lane is.
+    crate::registry::Registry::remove_on_disk_if(&cx.grove_dir(), &tag, |p| p.same_lane(&checked))
+        .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
 
     if !args.keep_local {
         // Ignore error: branch may already be gone if worktree removal cleaned it up
         let _ = backend.branch_delete(&cx.resolved.main_repo, &branch);
     }
+    // The remote delete goes over the network; nothing below needs the lock.
+    drop(delete_lock);
 
     if !args.keep_remote {
         // Ignore error: remote may not exist or branch may not be pushed
@@ -117,13 +125,6 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
             backend.remote_branch_delete(&cx.resolved.main_repo, &cx.resolved.fork_remote, &branch);
     }
 
-    // Remove only this entry from the registry as it is on disk now, so
-    // lanes registered while this ran are kept.
-    // An entry already gone (gc dropped it meanwhile) is fine: the lane is.
-    match crate::registry::Registry::remove_on_disk(&cx.grove_dir(), &tag) {
-        Ok(_) | Err(crate::registry::RegistryError::TagNotFound(_)) => {}
-        Err(e) => return Err(GroveError::Registry { msg: e.to_string() }),
-    }
     crate::events::record(&event);
 
     println!("Removed project '{tag}'.");
@@ -376,6 +377,24 @@ mod tests {
             loaded.projects.contains_key("newcomer"),
             "an entry added while done ran must be kept"
         );
+    }
+
+    /// A tag dropped and registered again for a new lane while `done` ran
+    /// keeps the new lane's entry.
+    #[test]
+    fn a_tag_reused_for_a_new_lane_is_not_deregistered() {
+        let dir = TempDir::new().unwrap();
+        let grove_dir = dir.path().join(".grove");
+        let old = make_project(&dir.path().join("lane"), "old-branch");
+        let mut new = make_project(&dir.path().join("lane"), "new-branch");
+        new.created = OffsetDateTime::from_unix_timestamp(1000).unwrap();
+        Registry::insert_on_disk(&grove_dir, "lane".to_string(), new).unwrap();
+
+        let removed =
+            Registry::remove_on_disk_if(&grove_dir, "lane", |p| p.same_lane(&old)).unwrap();
+        assert!(removed.is_none());
+        let loaded = Registry::load(&grove_dir).unwrap();
+        assert_eq!(loaded.projects["lane"].branch, "new-branch");
     }
 
     // AC2: dirty worktree → returns error mentioning --force
