@@ -270,7 +270,12 @@ pub fn run_restore(cx: &RepoContext, tag: &str, name: &str, file: Option<&Path>)
     // Nested worktrees in the lane's .scratch are not in the snap; moving
     // the lane aside would cut them off from their registrations.
     let scratch = lane.join(crate::cli::new::SCRATCH_DIR);
-    if std::fs::read_dir(&scratch).is_ok_and(|mut d| d.next().is_some()) {
+    let busy = match std::fs::read_dir(&scratch) {
+        Ok(mut d) => d.next().is_some(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => bail!("could not read {}: {e}", scratch.display()),
+    };
+    if busy {
         bail!(
             "{} is not empty and the snap does not hold it; move what is in it first, \
              or restore single files with --file",
@@ -282,8 +287,13 @@ pub fn run_restore(cx: &RepoContext, tag: &str, name: &str, file: Option<&Path>)
     let aside = move_aside(lane, &archive.join(format!("{tag}.before-restore-{stamp}")))?;
     // The old tree must not share the restored lane's admin directory: git
     // run in it would change the lane's index and HEAD.
-    let detached = aside.join(".git.detached-by-grove");
-    std::fs::rename(aside.join(".git"), &detached)?;
+    let detached = match move_aside(&aside.join(".git"), &aside.join(".git.detached-by-grove")) {
+        Ok(p) => p,
+        Err(e) => {
+            std::fs::rename(&aside, lane)?;
+            bail!("{e}; the lane was left as it was");
+        }
+    };
     if let Err(e) = btrfs::snapshot(&snap.path, lane, false) {
         std::fs::rename(&detached, aside.join(".git"))?;
         std::fs::rename(&aside, lane)?;
@@ -297,11 +307,11 @@ pub fn run_restore(cx: &RepoContext, tag: &str, name: &str, file: Option<&Path>)
         .args(["update-index", "-q", "--refresh"])
         .output();
     println!(
-        "restored {} from {}; the lane as it was is at {} (its .git renamed to \
-         .git.detached-by-grove)",
+        "restored {} from {}; the lane as it was is at {} (its .git renamed to {})",
         lane.display(),
         snap.path.display(),
-        aside.display()
+        aside.display(),
+        detached.file_name().unwrap_or_default().to_string_lossy()
     );
     Ok(())
 }

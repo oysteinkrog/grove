@@ -244,7 +244,10 @@ impl ShellBackend {
             .and_then(|_| self.fill_by_snapshot(source, target, &staged, &probe, source_lock));
         if let Err(e) = result {
             let cleanup = self.roll_back(repo_path, target, &staged);
-            let _ = std::fs::remove_file(&journal);
+            // Kept when the rollback was incomplete, so the next run retries.
+            if !registered_state(repo_path, target).0 {
+                let _ = std::fs::remove_file(&journal);
+            }
             drop(copy_lock);
             return Err(failed(
                 format!("snapshot {} -> {}", source.display(), target.display()),
@@ -453,6 +456,28 @@ fn journal_path(staged: &Path) -> PathBuf {
     staged.with_file_name(name)
 }
 
+/// Whether `target` is a registered worktree of `repo_path`, and whether it
+/// is locked. When the list cannot be read, both are assumed true.
+fn registered_state(repo_path: &Path, target: &Path) -> (bool, bool) {
+    let Ok(list) = ShellBackend::new().run_stdout(repo_path, &["worktree", "list", "--porcelain"])
+    else {
+        return (true, true);
+    };
+    let block = list.split("\n\n").find(|b| {
+        b.lines()
+            .next()
+            .and_then(|l| l.strip_prefix("worktree "))
+            .is_some_and(|p| Path::new(p) == target)
+    });
+    match block {
+        None => (false, false),
+        Some(b) => (
+            true,
+            b.lines().any(|l| l == "locked" || l.starts_with("locked ")),
+        ),
+    }
+}
+
 fn pid_alive(pid: u32) -> bool {
     pid == std::process::id() || Path::new(&format!("/proc/{pid}")).exists()
 }
@@ -480,13 +505,14 @@ fn sweep_staging(repo_path: &Path, staging: &Path) {
         if pid_alive(pid) {
             continue;
         }
-        if let Ok(text) = std::fs::read_to_string(entry.path()) {
-            let target = PathBuf::from(text.trim());
-            let backend = ShellBackend::new();
-            let t = target.to_str().unwrap_or_default();
-            if target.as_os_str().is_empty() {
-                // Nothing recorded.
-            } else if !target.exists() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let target = PathBuf::from(text.trim());
+        let backend = ShellBackend::new();
+        let t = target.to_str().unwrap_or_default();
+        if !target.as_os_str().is_empty() {
+            if !target.exists() {
                 eprintln!(
                     "Removing the registration of {}, left by an earlier grove run",
                     target.display()
@@ -496,7 +522,22 @@ fn sweep_staging(repo_path: &Path, staging: &Path) {
                 let _ = backend.run(repo_path, &["worktree", "unlock", t]);
             }
         }
-        let _ = std::fs::remove_file(entry.path());
+        // Done only when the registration is gone, or there and unlocked;
+        // else the journal stays for the next run to retry.
+        let (registered, locked) = registered_state(repo_path, &target);
+        let done = if target.exists() {
+            !locked
+        } else {
+            !registered
+        };
+        if target.as_os_str().is_empty() || done {
+            let _ = std::fs::remove_file(entry.path());
+        } else {
+            eprintln!(
+                "warning: could not clean up the registration of {}; will retry",
+                target.display()
+            );
+        }
     }
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
