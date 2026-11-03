@@ -63,7 +63,8 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     }
 
     // Copy from the clean base checkout, never from the main checkout, which
-    // may be far behind and carries ignored files.
+    // may be far behind and carries ignored files. Stable lanes copy from
+    // their own stable base.
     let default_ref = compute_base_ref(
         None,
         &cx.resolved.upstream_remote,
@@ -72,12 +73,22 @@ pub fn run(args: &NewArgs, cx: &RepoContext) -> Result<()> {
     let target_dir = target.parent().unwrap_or(&cx.resolved.work_dir);
     let mut copied_from = None;
     let mut reflinked = false;
-    if let Some(prepared) = backend.prepare_base(
-        &cx.resolved.main_repo,
-        &cx.resolved.work_dir,
-        target_dir,
-        &default_ref,
-    ) {
+    let prepared = match crate::git::base::stable_version(&cx.resolved.upstream_remote, &base_ref) {
+        Some(version) => backend.prepare_stable_base(
+            &cx.resolved.main_repo,
+            &cx.resolved.work_dir,
+            target_dir,
+            &cx.resolved.upstream_remote,
+            version,
+        ),
+        None => backend.prepare_base(
+            &cx.resolved.main_repo,
+            &cx.resolved.work_dir,
+            target_dir,
+            &default_ref,
+        ),
+    };
+    if let Some(prepared) = prepared {
         let base_dir = prepared.path.clone();
         reflinked = backend.worktree_add_reflinked_locked(
             &cx.resolved.main_repo,
@@ -280,6 +291,26 @@ mod tests {
     }
 
     // ── base ref computation ────────────────────────────────────────────────
+
+    #[test]
+    fn stable_base_ref_picks_stable_base() {
+        use crate::git::base::{stable_base_path, stable_version};
+        let r = compute_base_ref(Some("26.1"), "if", "master");
+        let version = stable_version("if", &r);
+        assert_eq!(version, Some("26.1"));
+        assert_eq!(
+            stable_base_path(std::path::Path::new("/w"), version.unwrap()),
+            std::path::PathBuf::from("/w/.grove/base-stable-26.1")
+        );
+        assert_eq!(
+            stable_version("if", &compute_base_ref(None, "if", "master")),
+            None
+        );
+        assert_eq!(
+            stable_version("if", &compute_base_ref(Some("main"), "if", "master")),
+            None
+        );
+    }
 
     #[test]
     fn base_none_uses_default() {
