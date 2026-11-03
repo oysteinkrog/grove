@@ -223,16 +223,26 @@ pub fn tag_of(path: &Path) -> String {
 /// (tests use it; so can someone who must run gc during a long build).
 pub const PRESSURE_ENV: &str = "GROVE_IO_PRESSURE";
 
-/// Batch deletes wait while "some avg10" in `/proc/pressure/io` is at or
-/// above this (percent of time at least one task stalled on I/O).
+/// Which line of `/proc/pressure/io` the gc pause reads: `full`, the share
+/// of time every non-idle task was stalled on I/O. Not `some` (at least one
+/// task stalled): on 2026-11-03 `some avg10` sat at 8 to 14 during normal
+/// builds, so gc would skip lanes all the time. `full` is what hurts the
+/// desktop.
+pub const DELETE_IO_PRESSURE_LINE: &str = "full";
+
+/// Batch deletes wait while `full avg10` ([`DELETE_IO_PRESSURE_LINE`]) is at
+/// or above this, in percent.
 pub const DELETE_IO_PRESSURE_LIMIT: f64 = 5.0;
 const PRESSURE_POLL: Duration = Duration::from_secs(5);
 const PRESSURE_MAX_WAIT: Duration = Duration::from_secs(600);
 const PRESSURE_REPORT_EVERY: Duration = Duration::from_secs(60);
 
-/// The "some avg10" value of a `/proc/pressure/io` text.
-pub fn parse_io_some_avg10(text: &str) -> Option<f64> {
-    let line = text.lines().find(|l| l.starts_with("some "))?;
+/// The `avg10` value of line `kind` (`some` or `full`) of a
+/// `/proc/pressure/io` text.
+pub fn parse_io_avg10(text: &str, kind: &str) -> Option<f64> {
+    let line = text
+        .lines()
+        .find(|l| l.split_whitespace().next() == Some(kind))?;
     line.split_whitespace()
         .find_map(|field| field.strip_prefix("avg10="))
         .and_then(|v| v.parse().ok())
@@ -247,7 +257,10 @@ pub fn io_pressure() -> Option<f64> {
     {
         return None;
     }
-    parse_io_some_avg10(&std::fs::read_to_string("/proc/pressure/io").ok()?)
+    parse_io_avg10(
+        &std::fs::read_to_string("/proc/pressure/io").ok()?,
+        DELETE_IO_PRESSURE_LINE,
+    )
 }
 
 /// How a wait for quiet I/O ended.
@@ -357,7 +370,7 @@ pub fn acquire_paced_with(
             |v, so_far| {
                 if last_report.is_none_or(|t| so_far >= t + PRESSURE_REPORT_EVERY) {
                     eprintln!(
-                        "I/O pressure is {v:.1} (some avg10, limit {DELETE_IO_PRESSURE_LIMIT}); \
+                        "I/O pressure is {v:.1} ({DELETE_IO_PRESSURE_LINE} avg10, limit {DELETE_IO_PRESSURE_LIMIT}); \
                          waiting before deleting '{tag}'..."
                     );
                     last_report = Some(so_far);
@@ -450,9 +463,11 @@ mod tests {
     fn pressure_line_is_parsed() {
         let text = "some avg10=12.50 avg60=3.00 avg300=1.00 total=123\n\
                     full avg10=2.00 avg60=1.00 avg300=0.50 total=45\n";
-        assert_eq!(parse_io_some_avg10(text), Some(12.5));
-        assert_eq!(parse_io_some_avg10("full avg10=1.00\n"), None);
-        assert_eq!(parse_io_some_avg10(""), None);
+        assert_eq!(parse_io_avg10(text, "some"), Some(12.5));
+        assert_eq!(parse_io_avg10(text, "full"), Some(2.0));
+        assert_eq!(parse_io_avg10(text, DELETE_IO_PRESSURE_LINE), Some(2.0));
+        assert_eq!(parse_io_avg10("full avg10=1.00\n", "some"), None);
+        assert_eq!(parse_io_avg10("", "full"), None);
     }
 
     #[test]
