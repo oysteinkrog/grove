@@ -14,12 +14,17 @@
 //! The holder writes `copy.lock.json` next to the lock with its pid, tag,
 //! command and start time, so a waiting command can say who it waits for.
 //!
-//! The lock is only taken on Unix. Windows keeps its old behaviour.
+//! Batch deletes (`grove gc`) also wait while the I/O pressure in
+//! `/proc/pressure/io` is high, so lane deletes do not follow each other while
+//! the filesystem is still busy with the last one. See [`acquire_paced`].
+//!
+//! The lock is only taken on Unix and the pressure check only runs on Linux.
+//! Windows keeps its old behaviour.
 
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +63,10 @@ impl Holder {
 pub fn lock_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os(LOCK_DIR_ENV).filter(|v| !v.is_empty()) {
         return Some(PathBuf::from(dir));
+    }
+    if cfg!(test) {
+        // Unit tests never touch the real machine lock.
+        return Some(std::env::temp_dir().join("grove-unit-test-locks"));
     }
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
         let dir = PathBuf::from(dir);
@@ -194,6 +203,131 @@ pub fn tag_of(path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// Batch deletes wait while "some avg10" in `/proc/pressure/io` is at or
+/// above this (percent of time at least one task stalled on I/O).
+pub const DELETE_IO_PRESSURE_LIMIT: f64 = 5.0;
+const PRESSURE_POLL: Duration = Duration::from_secs(5);
+const PRESSURE_MAX_WAIT: Duration = Duration::from_secs(600);
+const PRESSURE_REPORT_EVERY: Duration = Duration::from_secs(60);
+
+/// The "some avg10" value of a `/proc/pressure/io` text.
+pub fn parse_io_some_avg10(text: &str) -> Option<f64> {
+    let line = text.lines().find(|l| l.starts_with("some "))?;
+    line.split_whitespace()
+        .find_map(|field| field.strip_prefix("avg10="))
+        .and_then(|v| v.parse().ok())
+}
+
+/// The current I/O pressure, or `None` where there is none to read (not
+/// Linux, or a kernel without PSI).
+pub fn io_pressure() -> Option<f64> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    parse_io_some_avg10(&std::fs::read_to_string("/proc/pressure/io").ok()?)
+}
+
+/// How a wait for quiet I/O ended.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Paced {
+    /// Pressure is under the limit.
+    Quiet,
+    /// No pressure data; nothing to wait for.
+    NoData,
+    /// Pressure stayed at or above the limit for the whole wait; the last value.
+    TimedOut(f64),
+}
+
+/// Wait, polling every `poll`, until `read` reports pressure under
+/// [`DELETE_IO_PRESSURE_LIMIT`], at most `max_wait`. `on_wait` gets each high
+/// value and the time waited so far, before each sleep.
+pub fn wait_for_quiet_io(
+    mut read: impl FnMut() -> Option<f64>,
+    mut sleep: impl FnMut(Duration),
+    poll: Duration,
+    max_wait: Duration,
+    mut on_wait: impl FnMut(f64, Duration),
+) -> Paced {
+    let mut waited = Duration::ZERO;
+    loop {
+        match read() {
+            None => return Paced::NoData,
+            Some(v) if v < DELETE_IO_PRESSURE_LIMIT => return Paced::Quiet,
+            Some(v) => {
+                if waited >= max_wait {
+                    return Paced::TimedOut(v);
+                }
+                on_wait(v, waited);
+                sleep(poll);
+                waited += poll;
+            }
+        }
+    }
+}
+
+/// Take the lock for one delete in a batch: wait for quiet I/O first, take
+/// the lock, and check the pressure again once it is held (another command's
+/// delete may just have ended). Gives up with a message after 10 minutes of
+/// high pressure; the caller skips that delete.
+pub fn acquire_paced(op: &str, tag: &str) -> Result<MachineLock, String> {
+    acquire_paced_with(
+        tag,
+        || MachineLock::acquire(op, tag),
+        io_pressure,
+        std::thread::sleep,
+        PRESSURE_POLL,
+        PRESSURE_MAX_WAIT,
+    )
+}
+
+/// [`acquire_paced`] with the lock, pressure source, sleep and limits passed
+/// in.
+pub fn acquire_paced_with(
+    tag: &str,
+    mut take: impl FnMut() -> MachineLock,
+    mut read: impl FnMut() -> Option<f64>,
+    mut sleep: impl FnMut(Duration),
+    poll: Duration,
+    max_wait: Duration,
+) -> Result<MachineLock, String> {
+    let start = Instant::now();
+    let mut waited = Duration::ZERO;
+    loop {
+        let left = max_wait.saturating_sub(waited.max(start.elapsed()));
+        let mut last_report: Option<Duration> = None;
+        let outcome = wait_for_quiet_io(
+            &mut read,
+            |d| {
+                sleep(d);
+                waited += d;
+            },
+            poll,
+            left,
+            |v, so_far| {
+                if last_report.is_none_or(|t| so_far >= t + PRESSURE_REPORT_EVERY) {
+                    eprintln!(
+                        "I/O pressure is {v:.1} (some avg10, limit {DELETE_IO_PRESSURE_LIMIT}); \
+                         waiting before deleting '{tag}'..."
+                    );
+                    last_report = Some(so_far);
+                }
+            },
+        );
+        if let Paced::TimedOut(v) = outcome {
+            return Err(format!(
+                "skipped: I/O pressure stayed at {v:.1} or more (limit \
+                 {DELETE_IO_PRESSURE_LIMIT}) for {} s; run gc again later",
+                max_wait.as_secs()
+            ));
+        }
+        let lock = take();
+        match read() {
+            Some(v) if v >= DELETE_IO_PRESSURE_LIMIT => drop(lock),
+            _ => return Ok(lock),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +388,111 @@ mod tests {
     #[test]
     fn tag_is_the_last_component() {
         assert_eq!(tag_of(Path::new("/w/.scratch/lane-1")), "lane-1");
+    }
+
+    #[test]
+    fn pressure_line_is_parsed() {
+        let text = "some avg10=12.50 avg60=3.00 avg300=1.00 total=123\n\
+                    full avg10=2.00 avg60=1.00 avg300=0.50 total=45\n";
+        assert_eq!(parse_io_some_avg10(text), Some(12.5));
+        assert_eq!(parse_io_some_avg10("full avg10=1.00\n"), None);
+        assert_eq!(parse_io_some_avg10(""), None);
+    }
+
+    #[test]
+    fn delete_waits_while_pressure_is_high() {
+        let mut readings = vec![30.0, 12.0, 5.0, 4.9].into_iter();
+        let mut slept = Vec::new();
+        let outcome = wait_for_quiet_io(
+            || readings.next(),
+            |d| slept.push(d),
+            Duration::from_secs(5),
+            Duration::from_secs(600),
+            |_, _| {},
+        );
+        assert_eq!(outcome, Paced::Quiet);
+        // 30, 12 and 5 are all at or above the limit: three pauses.
+        assert_eq!(slept, vec![Duration::from_secs(5); 3]);
+    }
+
+    #[test]
+    fn delete_does_not_wait_when_quiet_or_without_data() {
+        let mut slept = 0;
+        assert_eq!(
+            wait_for_quiet_io(
+                || Some(0.4),
+                |_| slept += 1,
+                Duration::from_secs(5),
+                Duration::from_secs(600),
+                |_, _| {}
+            ),
+            Paced::Quiet
+        );
+        assert_eq!(
+            wait_for_quiet_io(
+                || None,
+                |_| slept += 1,
+                Duration::from_secs(5),
+                Duration::from_secs(600),
+                |_, _| {}
+            ),
+            Paced::NoData
+        );
+        assert_eq!(slept, 0);
+    }
+
+    #[test]
+    fn delete_gives_up_after_the_max_wait() {
+        let mut slept = Duration::ZERO;
+        let outcome = wait_for_quiet_io(
+            || Some(40.0),
+            |d| slept += d,
+            Duration::from_secs(5),
+            Duration::from_secs(20),
+            |_, _| {},
+        );
+        assert_eq!(outcome, Paced::TimedOut(40.0));
+        assert_eq!(slept, Duration::from_secs(20));
+    }
+
+    #[test]
+    fn paced_acquire_rechecks_pressure_once_it_holds_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        // Quiet before the lock, high right after it (another delete just
+        // ended), then quiet again.
+        let mut readings = vec![1.0, 20.0, 1.0, 1.0].into_iter();
+        let mut sleeps = 0;
+        let mut takes = 0;
+        let lock = acquire_paced_with(
+            "lane",
+            || {
+                takes += 1;
+                MachineLock::acquire_in(dir.path(), "delete", "lane").unwrap()
+            },
+            || readings.next(),
+            |_| sleeps += 1,
+            Duration::from_millis(1),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert!(lock.is_held());
+        assert_eq!(takes, 2, "the lock is dropped and taken again");
+        assert_eq!(readings.next(), None, "all four readings were used");
+        assert_eq!(sleeps, 0);
+    }
+
+    #[test]
+    fn paced_acquire_skips_when_pressure_stays_high() {
+        let err = acquire_paced_with(
+            "lane",
+            || panic!("the lock must not be taken"),
+            || Some(50.0),
+            |_| {},
+            Duration::from_secs(5),
+            Duration::from_secs(15),
+        )
+        .err()
+        .unwrap();
+        assert!(err.contains("skipped"), "{err}");
     }
 }

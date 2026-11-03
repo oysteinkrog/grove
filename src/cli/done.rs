@@ -89,7 +89,11 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
         }
     }
 
+    // A single interactive delete runs at once, without the pressure pause
+    // gc uses, but still one at a time with other copies and deletes.
+    let delete_lock = crate::machine_lock::MachineLock::acquire("delete", &tag);
     backend.worktree_remove(&cx.resolved.main_repo, &worktree_path, args.force)?;
+    drop(delete_lock);
 
     if !args.keep_local {
         // Ignore error: branch may already be gone if worktree removal cleaned it up

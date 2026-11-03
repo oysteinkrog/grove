@@ -166,7 +166,13 @@ impl ShellBackend {
         if let Err(e) = self.fill_from_source(source, target, source_lock) {
             // Leave nothing half-built behind. The branch stays, as it would
             // after any failed `grove new`, and the error says so.
+            // Removing a half copy is as heavy as making it.
+            let delete_lock = crate::machine_lock::MachineLock::acquire(
+                "delete",
+                &crate::machine_lock::tag_of(target),
+            );
             let _ = self.run(repo_path, &["worktree", "remove", "--force", target_str]);
+            drop(delete_lock);
             return Err(GroveError::GitCommandFailed {
                 cmd: format!("reflink copy {} -> {}", source.display(), target.display()),
                 stderr: format!(

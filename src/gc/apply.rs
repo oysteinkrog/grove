@@ -76,6 +76,12 @@ fn remove_tree(
 ) -> Result<String, String> {
     let path = &finding.path;
 
+    // One lane delete at a time machine-wide, and none while I/O pressure is
+    // high: a big lane delete is as heavy as a big copy. Taken before the
+    // guards run, so they see the tree as it is when the delete starts.
+    let delete_lock =
+        crate::machine_lock::acquire_paced("delete", &crate::machine_lock::tag_of(path))?;
+
     let safety = guards::inspect_tree(path).map_err(|e| {
         format!(
             "could not re-check {} before removing it: {e}",
@@ -92,6 +98,7 @@ fn remove_tree(
     }
 
     remove_worktree_dir(layout, path)?;
+    drop(delete_lock);
 
     let mut event = crate::events::Event::now("gc-remove", path);
     event.tag = tag.map(str::to_string);

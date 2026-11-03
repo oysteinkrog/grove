@@ -207,7 +207,12 @@ impl ShellBackend {
                     .map_err(|e| e.to_string()),
             };
             if let Err(e) = created {
+                let delete_lock = crate::machine_lock::MachineLock::acquire(
+                    "delete",
+                    &crate::machine_lock::tag_of(base),
+                );
                 let _ = self.run(repo_path, &["worktree", "remove", "--force", base_str]);
+                drop(delete_lock);
                 return Err(e);
             }
             // LFS files are full copies after a checkout; share their blocks
