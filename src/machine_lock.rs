@@ -68,13 +68,32 @@ pub fn lock_dir() -> Option<PathBuf> {
         // Unit tests never touch the real machine lock.
         return Some(std::env::temp_dir().join("grove-unit-test-locks"));
     }
+    if let Some(dir) = runtime_dir() {
+        return Some(dir.join("grove"));
+    }
+    directories::BaseDirs::new().map(|b| b.home_dir().join(".local").join("state").join("grove"))
+}
+
+/// The user's runtime directory. Cron and some ssh sessions run without
+/// `$XDG_RUNTIME_DIR`, so `/run/user/<uid>` is used when it exists: every
+/// grove run of one user must pick the same lock file.
+fn runtime_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
         let dir = PathBuf::from(dir);
         if dir.is_dir() {
-            return Some(dir.join("grove"));
+            return Some(dir);
         }
     }
-    directories::BaseDirs::new().map(|b| b.home_dir().join(".local").join("state").join("grove"))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let uid = std::fs::metadata("/proc/self").ok()?.uid();
+        let dir = PathBuf::from(format!("/run/user/{uid}"));
+        if dir.is_dir() {
+            return Some(dir);
+        }
+    }
+    None
 }
 
 /// The held lock. Dropping it removes the holder file and releases the lock.
@@ -188,12 +207,17 @@ pub fn read_holder(path: &Path) -> Option<Holder> {
 }
 
 fn write_holder(path: &Path, holder: &Holder) -> std::io::Result<()> {
+    // Drop whatever an earlier holder left (one killed before its Drop ran),
+    // so a failed write below never leaves another process's name behind.
+    let _ = std::fs::remove_file(path);
     let tmp = path.with_extension(format!("json.{}", std::process::id()));
-    {
-        let mut f = File::create(&tmp)?;
-        f.write_all(serde_json::to_string(holder)?.as_bytes())?;
+    let written = File::create(&tmp)
+        .and_then(|mut f| f.write_all(serde_json::to_string(holder)?.as_bytes()))
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
-    std::fs::rename(&tmp, path)
+    written
 }
 
 /// The name used for a lane in the holder file: the last path component.

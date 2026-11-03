@@ -14,7 +14,7 @@ use common::GitFixture;
 use grove::config::global::{RepoEntry, ReposManifest};
 use grove::machine_lock::{HOLD_ENV, LOCK_DIR_ENV, read_holder};
 
-const HOLD_MS: u64 = 1500;
+const HOLD_MS: u64 = 3000;
 
 fn entry(fx: &GitFixture) -> RepoEntry {
     RepoEntry {
@@ -29,7 +29,7 @@ fn entry(fx: &GitFixture) -> RepoEntry {
     }
 }
 
-fn grove(home: &Path, lock_dir: &Path, args: &[&str]) -> Command {
+fn grove(home: &Path, lock_dir: &Path, hold_ms: u64, args: &[&str]) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_grove"));
     cmd.args(args)
         .current_dir(home)
@@ -40,7 +40,7 @@ fn grove(home: &Path, lock_dir: &Path, args: &[&str]) -> Command {
         .env_remove("XDG_RUNTIME_DIR")
         .env_remove("GROVE_ORIG_CWD")
         .env(LOCK_DIR_ENV, lock_dir)
-        .env(HOLD_ENV, HOLD_MS.to_string())
+        .env(HOLD_ENV, hold_ms.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd
@@ -87,10 +87,29 @@ fn two_concurrent_creates_serialize_on_the_copy_lock() {
     .unwrap();
     let lock_dir = home.path().join("locks");
 
-    let started = Instant::now();
+    // Make both base checkouts first, so the second run below reaches the
+    // copy lock within milliseconds instead of building its base while the
+    // first run holds the lock.
+    for repo in ["one", "two"] {
+        let out = grove(
+            home.path(),
+            &lock_dir,
+            0,
+            &["--repo", repo, "new", "--no-fetch", &format!("warm-{repo}")],
+        )
+        .output()
+        .unwrap();
+        assert!(
+            out.status.success(),
+            "warm-up grove new failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
     let first = grove(
         home.path(),
         &lock_dir,
+        HOLD_MS,
         &["--repo", "one", "new", "--no-fetch", "lane-a"],
     )
     .spawn()
@@ -114,9 +133,11 @@ fn two_concurrent_creates_serialize_on_the_copy_lock() {
     assert_eq!(holder.tag, "lane-a");
     assert!(holder.command.contains("new"), "{}", holder.command);
 
+    let started = Instant::now();
     let second = grove(
         home.path(),
         &lock_dir,
+        HOLD_MS,
         &["--repo", "two", "new", "--no-fetch", "lane-b"],
     )
     .spawn()
@@ -136,9 +157,11 @@ fn two_concurrent_creates_serialize_on_the_copy_lock() {
             && err_b.contains("'lane-a'"),
         "the second run must say it waits for the first, got: {err_b}"
     );
+    // The second run started while the first still held the lock, and holds
+    // it HOLD_MS itself, so it cannot be done in less than HOLD_MS.
     assert!(
-        elapsed >= Duration::from_millis(2 * HOLD_MS),
-        "the two copies overlapped: both done in {elapsed:?}"
+        elapsed >= Duration::from_millis(HOLD_MS),
+        "the second copy did not wait: done in {elapsed:?}"
     );
     assert!(
         !holder_file.exists(),

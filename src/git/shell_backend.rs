@@ -171,12 +171,19 @@ impl ShellBackend {
                 "delete",
                 &crate::machine_lock::tag_of(target),
             );
-            let _ = self.run(repo_path, &["worktree", "remove", "--force", target_str]);
+            let removed = self.run(repo_path, &["worktree", "remove", "--force", target_str]);
             drop(delete_lock);
+            let cleanup = match removed {
+                Ok(()) => "The worktree was removed.".to_string(),
+                Err(rm) => format!(
+                    "The half-made worktree {} could not be removed ({rm}); remove it with `git worktree remove --force`.",
+                    target.display()
+                ),
+            };
             return Err(GroveError::GitCommandFailed {
                 cmd: format!("reflink copy {} -> {}", source.display(), target.display()),
                 stderr: format!(
-                    "{e}\nThe worktree was removed. Branch '{branch}' was kept. Set {REFLINK_ENV}=0 to use a plain git worktree add."
+                    "{e}\n{cleanup} Branch '{branch}' was kept. Set {REFLINK_ENV}=0 to use a plain git worktree add."
                 ),
             });
         }
