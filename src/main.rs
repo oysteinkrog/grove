@@ -44,6 +44,8 @@ fn main() -> ExitCode {
         .map(|b| b.config_dir().join("grove"))
         .unwrap_or_else(|| PathBuf::from("~/.config/grove"));
 
+    grove::git::snapshot::load_config_default(&config_dir);
+
     if let Err(e) = migrate::run_if_needed(&config_dir) {
         eprintln!("grove: migration error: {e}");
         return ExitCode::FAILURE;

@@ -7,7 +7,9 @@
 //! subvolume) is a subvolume, a new lane is a snapshot of it plus a small
 //! `git reset --hard`.
 //!
-//! Off by default. `GROVE_SNAPSHOT=1` turns it on.
+//! Off by default. `GROVE_SNAPSHOT=1` turns it on for one process, and a
+//! `snapshot` file in grove's config directory holding `on` turns it on for
+//! every process. The env var wins when both are set.
 //!
 //! The order of steps guards one hazard above all: a fresh snapshot's `.git`
 //! file still points at the source's admin directory, so any git command run
@@ -24,8 +26,28 @@ use super::shell_backend::{ShellBackend, has_submodules};
 use crate::error::GroveError;
 
 /// `GROVE_SNAPSHOT=1` (or `on`, `true`, `always`) makes new lanes btrfs
-/// snapshots where the source allows it. Unset or anything else: off.
+/// snapshots where the source allows it. Set to anything else: off.
 pub const SNAPSHOT_ENV: &str = "GROVE_SNAPSHOT";
+
+/// File in grove's config directory that sets the default when
+/// `GROVE_SNAPSHOT` is unset. Same values as the env var.
+pub const SNAPSHOT_FILE: &str = "snapshot";
+
+static CONFIG_DEFAULT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+fn is_on(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "on" | "true" | "always"
+    )
+}
+
+/// Read the `snapshot` file once at startup. A missing file means off.
+pub fn load_config_default(config_dir: &Path) {
+    if let Ok(value) = std::fs::read_to_string(config_dir.join(SNAPSHOT_FILE)) {
+        let _ = CONFIG_DEFAULT.set(is_on(&value));
+    }
+}
 
 /// True when snapshot lanes are switched on.
 pub fn snapshot_enabled() -> bool {
@@ -33,12 +55,10 @@ pub fn snapshot_enabled() -> bool {
     if let Some(on) = FORCE_ENABLED.with(|f| f.get()) {
         return on;
     }
-    std::env::var(SNAPSHOT_ENV).is_ok_and(|v| {
-        matches!(
-            v.to_ascii_lowercase().as_str(),
-            "1" | "on" | "true" | "always"
-        )
-    })
+    match std::env::var(SNAPSHOT_ENV) {
+        Ok(v) => is_on(&v),
+        Err(_) => CONFIG_DEFAULT.get().copied().unwrap_or(false),
+    }
 }
 
 /// Directory that holds snapshots until their `.git` is fixed.

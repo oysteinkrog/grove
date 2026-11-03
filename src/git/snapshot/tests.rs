@@ -482,3 +482,13 @@ fn a_dead_runs_locked_registration_is_removed() {
     git(&f.main, &["rev-parse", "--verify", "dead"]);
     assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
 }
+
+#[test]
+fn switch_values() {
+    for v in ["1", "on", "ON", "true", "always", "on\n", " 1 "] {
+        assert!(is_on(v), "{v:?}");
+    }
+    for v in ["", "0", "off", "false", "no", "yes"] {
+        assert!(!is_on(v), "{v:?}");
+    }
+}
