@@ -1,4 +1,5 @@
 pub mod base;
+pub mod btrfs;
 pub mod gix_backend;
 pub mod shell_backend;
 pub mod status;
