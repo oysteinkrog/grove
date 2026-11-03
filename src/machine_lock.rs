@@ -23,6 +23,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -72,7 +73,10 @@ pub fn lock_dir() -> Option<PathBuf> {
     }
     if cfg!(test) {
         // Unit tests never touch the real machine lock.
-        return Some(std::env::temp_dir().join("grove-unit-test-locks"));
+        // Unique per run, so two test runs (or two users) never share it.
+        return Some(
+            std::env::temp_dir().join(format!("grove-unit-test-locks-{}", std::process::id())),
+        );
     }
     directories::BaseDirs::new().map(|b| b.home_dir().join(".local").join("state").join("grove"))
 }
@@ -282,7 +286,9 @@ pub fn wait_for_quiet_io(
 /// delete may just have ended). Gives up with a message after 10 minutes of
 /// high pressure; the caller skips that delete.
 pub fn acquire_paced(op: &str, tag: &str) -> Result<MachineLock, String> {
-    acquire_paced_with(
+    static GAVE_UP: AtomicBool = AtomicBool::new(false);
+    acquire_paced_in_run(
+        &GAVE_UP,
         tag,
         || MachineLock::acquire(op, tag),
         io_pressure,
@@ -291,6 +297,34 @@ pub fn acquire_paced(op: &str, tag: &str) -> Result<MachineLock, String> {
         PRESSURE_MAX_WAIT,
     )
 }
+
+/// [`acquire_paced_with`] with one pressure budget per grove run, not per
+/// lane: once one delete gave up on high pressure, `gave_up` is set and every
+/// later delete of the run skips at once instead of waiting its own 10
+/// minutes.
+pub fn acquire_paced_in_run(
+    gave_up: &AtomicBool,
+    tag: &str,
+    take: impl FnMut() -> Result<MachineLock, String>,
+    read: impl FnMut() -> Option<f64>,
+    sleep: impl FnMut(Duration),
+    poll: Duration,
+    max_wait: Duration,
+) -> Result<MachineLock, String> {
+    if gave_up.load(Ordering::Relaxed) {
+        return Err(
+            "skipped: I/O pressure stayed high earlier in this run; run gc again later".to_string(),
+        );
+    }
+    let result = acquire_paced_with(tag, take, read, sleep, poll, max_wait);
+    if result.as_ref().is_err_and(|e| e.starts_with(PRESSURE_SKIP)) {
+        gave_up.store(true, Ordering::Relaxed);
+    }
+    result
+}
+
+/// How a skip for high pressure starts.
+const PRESSURE_SKIP: &str = "skipped: waited";
 
 /// [`acquire_paced`] with the lock, pressure source, sleep and limits passed
 /// in.
@@ -328,7 +362,7 @@ pub fn acquire_paced_with(
         );
         if let Paced::TimedOut(v) = outcome {
             return Err(format!(
-                "skipped: waited {} s for quiet I/O and pressure is still {v:.1} (limit \
+                "{PRESSURE_SKIP} {} s for quiet I/O and pressure is still {v:.1} (limit \
                  {DELETE_IO_PRESSURE_LIMIT}); run gc again later",
                 waited.as_secs()
             ));
@@ -512,6 +546,51 @@ mod tests {
             Duration::from_millis(10),
         );
         assert!(lock.is_ok(), "{:?}", lock.err());
+    }
+
+    #[test]
+    fn after_one_pressure_skip_the_rest_of_the_run_skips_at_once() {
+        let gave_up = AtomicBool::new(false);
+        let mut sleeps = 0;
+        let first = acquire_paced_in_run(
+            &gave_up,
+            "one",
+            || panic!("the lock must not be taken"),
+            || Some(50.0),
+            |_| sleeps += 1,
+            Duration::from_secs(5),
+            Duration::from_secs(15),
+        );
+        assert!(first.is_err());
+        assert_eq!(sleeps, 3);
+        assert!(gave_up.load(Ordering::Relaxed));
+
+        let second = acquire_paced_in_run(
+            &gave_up,
+            "two",
+            || panic!("the lock must not be taken"),
+            || panic!("pressure must not be read again"),
+            |_| panic!("the second lane must not wait"),
+            Duration::from_secs(5),
+            Duration::from_secs(15),
+        );
+        assert!(second.err().unwrap().contains("earlier in this run"));
+    }
+
+    #[test]
+    fn a_broken_lock_does_not_end_the_run() {
+        let gave_up = AtomicBool::new(false);
+        let r = acquire_paced_in_run(
+            &gave_up,
+            "one",
+            || Err("no lock".to_string()),
+            || Some(0.0),
+            |_| {},
+            Duration::from_secs(5),
+            Duration::from_secs(15),
+        );
+        assert!(r.is_err());
+        assert!(!gave_up.load(Ordering::Relaxed));
     }
 
     #[test]
