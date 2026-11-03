@@ -198,7 +198,9 @@ fn delete_checked_branch(
     // transaction: a branch moved by any git command in between is kept.
     match exec::git(
         &layout.main_repo,
-        &["update-ref", "-d", &refname, checked],
+        // --no-deref: a branch turned into a symbolic ref meanwhile must not
+        // take the ref it points to with it.
+        &["update-ref", "--no-deref", "-d", &refname, checked],
         QUICK_GIT_TIMEOUT,
     ) {
         Ok(_) => {
@@ -581,6 +583,20 @@ mod tests {
                 .unwrap()
                 .success(),
             "the branch's config section goes with it"
+        );
+
+        // A branch that became a symbolic ref is deleted alone, never the
+        // branch it points to.
+        git_in(&main, &["branch", "-f", "target", &checked]);
+        git_in(
+            &main,
+            &["symbolic-ref", "refs/heads/alias", "refs/heads/target"],
+        );
+        let msg = delete_checked_branch(&layout, &lane, "alias", Some(&checked)).unwrap();
+        assert!(msg.contains("deleted branch alias"), "{msg}");
+        assert_eq!(
+            git_in(&main, &["rev-parse", "--verify", "refs/heads/target"]),
+            checked
         );
 
         // A branch checked out in another worktree is kept even at the

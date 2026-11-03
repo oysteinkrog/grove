@@ -137,23 +137,28 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
 
     if !args.keep_remote {
         // Ignore error: remote may not exist or branch may not be pushed.
-        let _ = match &remote_tip {
+        match &remote_tip {
             // With a lease, so a branch someone pushed to since is kept.
-            Some(oid) => backend.run(
-                &cx.resolved.main_repo,
-                &[
-                    "push",
-                    &format!("--force-with-lease=refs/heads/{branch}:{oid}"),
-                    &cx.resolved.fork_remote,
-                    &format!(":refs/heads/{branch}"),
-                ],
+            // Ignore errors: the remote may be gone or the branch not pushed.
+            Some(oid) => {
+                let _ = backend.run(
+                    &cx.resolved.main_repo,
+                    &[
+                        "push",
+                        &format!("--force-with-lease=refs/heads/{branch}:{oid}"),
+                        &cx.resolved.fork_remote,
+                        &format!(":refs/heads/{branch}"),
+                    ],
+                );
+            }
+            // Without a remote-tracking ref there is no commit to lease
+            // against, and a missing ref does not prove the remote branch is
+            // gone, so it is kept.
+            None => println!(
+                "  Remote branch {}/{branch} not deleted: no remote-tracking ref to check it against.",
+                cx.resolved.fork_remote
             ),
-            None => backend.remote_branch_delete(
-                &cx.resolved.main_repo,
-                &cx.resolved.fork_remote,
-                &branch,
-            ),
-        };
+        }
     }
 
     // Deregister last: while the entry exists, `grove new` cannot reuse the
