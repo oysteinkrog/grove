@@ -50,14 +50,9 @@ pub fn apply(finding: &Finding, layout: &Layout, grove_dir: &Path) -> Result<Str
 }
 
 fn drop_registry_entry(tag: &str, grove_dir: &Path) -> Result<String, String> {
-    let mut registry =
-        Registry::load(grove_dir).map_err(|e| format!("could not read the registry: {e}"))?;
-    registry
-        .remove(tag)
-        .map_err(|e| format!("could not drop '{tag}': {e}"))?;
-    registry
-        .save(grove_dir)
-        .map_err(|e| format!("could not write the registry: {e}"))?;
+    // Under registry.lock on the file as it is now, so an entry another
+    // grove command adds meanwhile is kept.
+    Registry::remove_on_disk(grove_dir, tag).map_err(|e| format!("could not drop '{tag}': {e}"))?;
     Ok(format!("dropped registry entry '{tag}'"))
 }
 
@@ -143,13 +138,10 @@ fn remove_tree(
     }
 
     if let Some(tag) = tag {
-        let mut registry =
-            Registry::load(grove_dir).map_err(|e| format!("could not read the registry: {e}"))?;
-        if registry.remove(tag).is_ok() {
-            registry
-                .save(grove_dir)
-                .map_err(|e| format!("could not write the registry: {e}"))?;
-            message.push_str(&format!("; deregistered '{tag}'"));
+        match Registry::remove_on_disk(grove_dir, tag) {
+            Ok(_) => message.push_str(&format!("; deregistered '{tag}'")),
+            Err(crate::registry::RegistryError::TagNotFound(_)) => {}
+            Err(e) => return Err(format!("could not write the registry: {e}")),
         }
     }
 

@@ -119,8 +119,11 @@ pub fn run(args: &DoneArgs, cx: &RepoContext) -> Result<()> {
 
     // Remove only this entry from the registry as it is on disk now, so
     // lanes registered while this ran are kept.
-    crate::registry::Registry::remove_on_disk(&cx.grove_dir(), &tag)
-        .map_err(|e| GroveError::Registry { msg: e.to_string() })?;
+    // An entry already gone (gc dropped it meanwhile) is fine: the lane is.
+    match crate::registry::Registry::remove_on_disk(&cx.grove_dir(), &tag) {
+        Ok(_) | Err(crate::registry::RegistryError::TagNotFound(_)) => {}
+        Err(e) => return Err(GroveError::Registry { msg: e.to_string() }),
+    }
     crate::events::record(&event);
 
     println!("Removed project '{tag}'.");
