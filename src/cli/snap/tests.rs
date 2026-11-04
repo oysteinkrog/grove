@@ -221,10 +221,12 @@ fn snap_skips_unchanged_lanes_restores_and_prunes() {
     assert_eq!(list_snaps(&work_dir, "lane").len(), 3);
     run_at(&args, &cx, hours(24 * 5)).unwrap();
     assert_eq!(list_snaps(&work_dir, "lane").len(), 1);
-    // ...and once it is gone, its snaps age out too.
+    // ...and once it is gone, its snaps go after the grace period.
     Registry::remove_on_disk_if(&grove_dir, "lane", |_| true).unwrap();
     let cx = context(&main, &work_dir);
     run_at(&args, &cx, hours(24 * 10)).unwrap();
+    assert_eq!(list_snaps(&work_dir, "lane").len(), 1, "within grace");
+    run_at(&args, &cx, hours(24 * 11)).unwrap();
     assert!(list_snaps(&work_dir, "lane").is_empty());
     assert!(!snaps_dir(&work_dir, "lane").exists());
     for e in std::fs::read_dir(work_dir.join(".archive"))
@@ -233,4 +235,140 @@ fn snap_skips_unchanged_lanes_restores_and_prunes() {
     {
         btrfs::delete_subvolume(&e.path(), &[]).unwrap();
     }
+}
+
+fn registered(path: &Path) -> Project {
+    Project {
+        path: path.to_path_buf(),
+        branch: "b".into(),
+        base: "main".into(),
+        created: OffsetDateTime::now_utc(),
+        issue: None,
+        frozen: false,
+        expires_at: None,
+        owner: None,
+    }
+}
+
+/// A read-only snap of `src` for `tag` at `at`, as `grove snap` makes one.
+fn fake_snap(work_dir: &Path, src: &Path, tag: &str, at: OffsetDateTime) -> PathBuf {
+    let dir = snaps_dir(work_dir, tag);
+    std::fs::create_dir_all(&dir).unwrap();
+    let dest = dir.join(at.format(NAME_FORMAT).unwrap());
+    btrfs::snapshot(src, &dest, true).unwrap();
+    dest
+}
+
+#[test]
+fn gone_lane_snaps_are_deleted_after_the_grace_period_only() {
+    let Some(tmp) = crate::git::btrfs::tests::btrfs_scratch() else {
+        return;
+    };
+    let work_dir = tmp.path().to_path_buf();
+    let main = work_dir.join("master");
+    std::fs::create_dir_all(&main).unwrap();
+    let grove_dir = work_dir.join(".grove");
+    std::fs::create_dir_all(&grove_dir).unwrap();
+    let src = work_dir.join("src");
+    btrfs::create_subvolume(&src).unwrap();
+    std::fs::write(src.join("work.txt"), "uncommitted\n").unwrap();
+    // "live" is registered (a plain dir, so it is not snapped again);
+    // "gone" is not. Both have a snap from a week before.
+    let live_dir = work_dir.join("live");
+    std::fs::create_dir_all(&live_dir).unwrap();
+    Registry::insert_on_disk(&grove_dir, "live".into(), registered(&live_dir)).unwrap();
+    let t0 = datetime!(2026-11-03 10:00 UTC);
+    let week_ago = t0 - time::Duration::days(7);
+    let live_snap = fake_snap(&work_dir, &src, "live", week_ago);
+    let gone_snap = fake_snap(&work_dir, &src, "gone", week_ago);
+    let cx = context(&main, &work_dir);
+    let args = SnapArgs { dry_run: false };
+    let grace = time::Duration::hours(24);
+    let hours = |h: i64| t0 + time::Duration::hours(h);
+    btrfs::TEST_FLOOR_GIB.with(|c| c.set(Some(0)));
+
+    // First run that finds the lane gone: kept, even though the snap is
+    // older than the daily schedule, and the time is recorded.
+    run_with_grace(&args, &cx, t0, grace).unwrap();
+    assert!(gone_snap.exists(), "within grace");
+    assert!(gone_marker(&work_dir, "gone").is_file());
+    assert!(live_snap.exists(), "a live lane keeps its newest snap");
+
+    // A dry run past the grace period deletes nothing.
+    run_with_grace(&SnapArgs { dry_run: true }, &cx, hours(25), grace).unwrap();
+    assert!(gone_snap.exists());
+
+    run_with_grace(&args, &cx, hours(23), grace).unwrap();
+    assert!(gone_snap.exists(), "still within grace");
+
+    // An unreadable registry past the grace period deletes nothing.
+    let reg = grove_dir.join("registry.json");
+    let good = std::fs::read(&reg).unwrap();
+    std::fs::write(&reg, "{ not json").unwrap();
+    assert!(run_with_grace(&args, &cx, hours(25), grace).is_err());
+    assert!(gone_snap.exists());
+    std::fs::write(&reg, &good).unwrap();
+
+    run_with_grace(&args, &cx, hours(25), grace).unwrap();
+    assert!(!gone_snap.exists(), "past grace: deleted");
+    assert!(!snaps_dir(&work_dir, "gone").exists());
+    assert!(live_snap.exists(), "the live lane is untouched");
+    assert!(btrfs::subvol_info(&live_snap).unwrap().readonly);
+    assert!(src.join("work.txt").exists(), "nothing outside snaps");
+
+    // A tag that comes back clears its mark, so its next exit gets a
+    // fresh grace period.
+    let back = fake_snap(&work_dir, &src, "back", week_ago);
+    run_with_grace(&args, &cx, hours(26), grace).unwrap();
+    assert!(gone_marker(&work_dir, "back").is_file());
+    Registry::insert_on_disk(&grove_dir, "back".into(), registered(&live_dir)).unwrap();
+    let cx = context(&main, &work_dir);
+    run_with_grace(&args, &cx, hours(27), grace).unwrap();
+    assert!(!gone_marker(&work_dir, "back").exists());
+    Registry::remove_on_disk_if(&grove_dir, "back", |_| true).unwrap();
+    let cx = context(&main, &work_dir);
+    run_with_grace(&args, &cx, hours(60), grace).unwrap();
+    assert!(back.exists(), "fresh grace period after the tag left again");
+    run_with_grace(&args, &cx, hours(85), grace).unwrap();
+    assert!(!back.exists());
+
+    btrfs::delete_subvolume(&live_snap, &[]).unwrap();
+    btrfs::delete_subvolume(&src, &[]).unwrap();
+}
+
+#[test]
+fn unreadable_or_missing_registry_deletes_nothing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let work_dir = tmp.path().to_path_buf();
+    let main = work_dir.join("master");
+    std::fs::create_dir_all(&main).unwrap();
+    let grove_dir = work_dir.join(".grove");
+    std::fs::create_dir_all(&grove_dir).unwrap();
+    let snap = snaps_dir(&work_dir, "gone").join("20261001T000000Z");
+    std::fs::create_dir_all(&snap).unwrap();
+    let cx = context(&main, &work_dir);
+    let args = SnapArgs { dry_run: false };
+    let late = datetime!(2026-12-01 00:00 UTC);
+    let grace = time::Duration::hours(0);
+
+    // Missing: elsewhere grove reads this as empty, which would make every
+    // lane look gone.
+    let err = run_with_grace(&args, &cx, late, grace).unwrap_err();
+    assert!(err.to_string().contains("no registry"), "{err}");
+    std::fs::write(grove_dir.join("registry.json"), "{ not json").unwrap();
+    assert!(run_with_grace(&args, &cx, late, grace).is_err());
+    assert!(snap.is_dir());
+    assert!(!gone_marker(&work_dir, "gone").exists());
+}
+
+#[test]
+fn grace_period_comes_from_the_environment() {
+    // Read through a helper so the test does not race other tests on the
+    // process environment.
+    assert_eq!(DEFAULT_ORPHAN_GRACE_HOURS, 24);
+    assert_eq!(parse_grace(Some("48")), time::Duration::hours(48));
+    assert_eq!(parse_grace(Some(" 0 ")), time::Duration::hours(0));
+    assert_eq!(parse_grace(Some("-3")), time::Duration::hours(24));
+    assert_eq!(parse_grace(Some("x")), time::Duration::hours(24));
+    assert_eq!(parse_grace(None), time::Duration::hours(24));
 }

@@ -11,12 +11,20 @@
 //! - pruned to the newest snap per hour for 24 hours and per day for 3 days,
 //!   and always the newest one of a lane that is still registered.
 //!
+//! When a lane is no longer in the registry, its snaps are kept on that
+//! schedule (newest included) for a grace period, so a `grove done` by
+//! mistake can still be undone with `grove snap restore`. The first run that
+//! finds the lane gone writes the time to `<tag>/.gone-since`; once the grace
+//! period (`GROVE_SNAP_ORPHAN_GRACE_HOURS`, default 24) has passed since then,
+//! all of the lane's snaps are deleted. A run that cannot read the registry
+//! deletes nothing.
+//!
 //! A snap does not hold nested subvolumes (a lane's own `.scratch`): btrfs
 //! leaves an empty placeholder for them.
 //!
-//! `grove done` leaves a lane's snaps alone; they age out on this schedule,
-//! as snapper would have kept the lane. The index, HEAD and config of a lane
-//! live in the main repo's `.git`, which snapper still covers.
+//! `grove done` leaves a lane's snaps alone; they go after the grace period.
+//! The index, HEAD and config of a lane live in the main repo's `.git`,
+//! which snapper still covers.
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +41,26 @@ const NAME_FORMAT: &[FormatItem<'static>] =
 
 const KEEP_HOURLY: i64 = 24;
 const KEEP_DAILY: i64 = 3;
+
+/// Environment variable with the grace period, in hours, before the snaps
+/// of a lane that left the registry are deleted.
+pub const ORPHAN_GRACE_ENV: &str = "GROVE_SNAP_ORPHAN_GRACE_HOURS";
+const DEFAULT_ORPHAN_GRACE_HOURS: i64 = 24;
+
+/// File in a lane's snaps dir with the time a run first found the lane gone.
+const GONE_MARKER: &str = ".gone-since";
+
+fn orphan_grace() -> time::Duration {
+    parse_grace(std::env::var(ORPHAN_GRACE_ENV).ok().as_deref())
+}
+
+fn parse_grace(value: Option<&str>) -> time::Duration {
+    let hours = value
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .filter(|h| *h >= 0)
+        .unwrap_or(DEFAULT_ORPHAN_GRACE_HOURS);
+    time::Duration::hours(hours)
+}
 
 /// Where the snaps of `tag` live.
 pub fn snaps_dir(work_dir: &Path, tag: &str) -> PathBuf {
@@ -53,6 +81,7 @@ pub fn list_snaps(work_dir: &Path, tag: &str) -> Vec<Snap> {
         .into_iter()
         .flatten()
         .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             let time = time::PrimitiveDateTime::parse(&name, NAME_FORMAT)
@@ -102,8 +131,33 @@ pub fn run(args: &SnapArgs, cx: &RepoContext) -> Result<()> {
 }
 
 pub fn run_at(args: &SnapArgs, cx: &RepoContext, now: OffsetDateTime) -> Result<()> {
+    run_with_grace(args, cx, now, orphan_grace())
+}
+
+/// The registry, or an error when it is missing or cannot be parsed. A
+/// missing file reads as an empty registry elsewhere in grove; here that
+/// would make every lane look gone, so it is an error.
+fn load_registry(grove_dir: &Path) -> Result<crate::registry::Registry> {
+    let path = grove_dir.join("registry.json");
+    if !path.is_file() {
+        bail!(
+            "no registry at {}; nothing snapped or deleted",
+            path.display()
+        );
+    }
+    crate::registry::Registry::load(grove_dir)
+        .map_err(|e| anyhow!("{e}; nothing snapped or deleted"))
+}
+
+fn run_with_grace(
+    args: &SnapArgs,
+    cx: &RepoContext,
+    now: OffsetDateTime,
+    grace: time::Duration,
+) -> Result<()> {
     let work_dir = &cx.resolved.work_dir;
-    let registry = crate::registry::Registry::load(&cx.grove_dir())?;
+    let grove_dir = cx.grove_dir();
+    let registry = load_registry(&grove_dir)?;
     let mut failures = 0;
     // Below the floor `grove new` uses, no new snaps: each pins the build
     // output written since the last one. Pruning below still runs, which
@@ -127,9 +181,18 @@ pub fn run_at(args: &SnapArgs, cx: &RepoContext, now: OffsetDateTime) -> Result<
     }
     let root = work_dir.join(".grove").join("snaps");
     for entry in std::fs::read_dir(&root).into_iter().flatten().flatten() {
+        // Only real directories: a symlink could lead out of the snaps dir.
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
         let tag = entry.file_name().to_string_lossy().into_owned();
-        let live = registry.projects.contains_key(&tag);
-        if let Err(e) = prune(work_dir, &tag, now, live, args.dry_run) {
+        let result = if registry.projects.contains_key(&tag) {
+            clear_gone_marker(work_dir, &tag, args.dry_run);
+            prune(work_dir, &tag, now, true, args.dry_run)
+        } else {
+            prune_gone(&grove_dir, work_dir, &tag, now, grace, args.dry_run)
+        };
+        if let Err(e) = result {
             failures += 1;
             eprintln!("prune {tag}: {e}");
         }
@@ -138,6 +201,88 @@ pub fn run_at(args: &SnapArgs, cx: &RepoContext, now: OffsetDateTime) -> Result<
         bail!("{failures} lane(s) failed");
     }
     Ok(())
+}
+
+fn gone_marker(work_dir: &Path, tag: &str) -> PathBuf {
+    snaps_dir(work_dir, tag).join(GONE_MARKER)
+}
+
+/// A lane that is registered again (its tag reused, or the registry put
+/// back) starts a fresh grace period the next time it goes.
+fn clear_gone_marker(work_dir: &Path, tag: &str, dry_run: bool) {
+    let marker = gone_marker(work_dir, tag);
+    if !dry_run && marker.is_file() {
+        let _ = std::fs::remove_file(&marker);
+    }
+}
+
+/// When a run first found `tag` gone, or `None` when no run has yet (or the
+/// marker cannot be read, which restarts the grace period).
+fn gone_since(work_dir: &Path, tag: &str) -> Option<OffsetDateTime> {
+    let text = std::fs::read_to_string(gone_marker(work_dir, tag)).ok()?;
+    OffsetDateTime::parse(text.trim(), &time::format_description::well_known::Rfc3339).ok()
+}
+
+/// Prune the snaps of a lane that is not in the registry. Within the grace
+/// period they follow the normal schedule with the newest kept; after it,
+/// all of them go.
+fn prune_gone(
+    grove_dir: &Path,
+    work_dir: &Path,
+    tag: &str,
+    now: OffsetDateTime,
+    grace: time::Duration,
+    dry_run: bool,
+) -> Result<()> {
+    let since = match gone_since(work_dir, tag) {
+        Some(t) if t <= now => t,
+        _ => {
+            if dry_run {
+                println!("would mark {tag} gone since {}", fmt_time(now));
+            } else {
+                let stamp = now.format(&time::format_description::well_known::Rfc3339)?;
+                std::fs::write(gone_marker(work_dir, tag), format!("{stamp}\n"))?;
+                println!(
+                    "lane {tag} is gone; its snaps are kept until {}",
+                    fmt_time(now + grace)
+                );
+            }
+            now
+        }
+    };
+    if now - since < grace {
+        return prune(work_dir, tag, now, true, dry_run);
+    }
+    // Read the registry again just before deleting: a `grove new` may have
+    // taken the tag during this run, and a registry that cannot be read now
+    // deletes nothing.
+    let registry = load_registry(grove_dir)?;
+    if registry.projects.contains_key(tag) {
+        return Ok(());
+    }
+    let reason = format!(
+        "lane {tag} gone since {}, grace {} h passed",
+        fmt_time(since),
+        grace.whole_hours()
+    );
+    for snap in list_snaps(work_dir, tag) {
+        delete_snap(&snap, tag, &reason, dry_run)?;
+    }
+    if !dry_run {
+        let _ = std::fs::remove_file(gone_marker(work_dir, tag));
+        remove_if_empty(&snaps_dir(work_dir, tag));
+    }
+    Ok(())
+}
+
+fn fmt_time(t: OffsetDateTime) -> String {
+    t.format(NAME_FORMAT).unwrap_or_else(|_| t.to_string())
+}
+
+fn remove_if_empty(dir: &Path) {
+    if std::fs::read_dir(dir).is_ok_and(|mut d| d.next().is_none()) {
+        let _ = std::fs::remove_dir(dir);
+    }
 }
 
 /// Snap one lane when it changed since its newest snap. Returns the new
@@ -177,27 +322,32 @@ fn prune(work_dir: &Path, tag: &str, now: OffsetDateTime, live: bool, dry_run: b
     let times: Vec<_> = snaps.iter().map(|s| s.time).collect();
     let keep = retained(&times, now, live);
     for (snap, keep) in snaps.iter().zip(keep) {
-        if keep {
-            continue;
+        if !keep {
+            delete_snap(snap, tag, "past the hourly and daily schedule", dry_run)?;
         }
-        if dry_run {
-            println!("would delete {}", snap.path.display());
-            continue;
-        }
-        // Without user_subvol_rm_allowed this unlinks every file: as heavy
-        // as a lane delete, so one at a time and not under I/O pressure.
-        let lock = (!btrfs::rm_allowed(&snap.path))
-            .then(|| crate::machine_lock::acquire_paced("delete", tag))
-            .transpose()
-            .map_err(|e| anyhow!(e))?;
-        btrfs::delete_subvolume(&snap.path, &[]).map_err(|e| anyhow!("{e}"))?;
-        drop(lock);
-        println!("deleted {}", snap.path.display());
     }
-    let dir = snaps_dir(work_dir, tag);
-    if std::fs::read_dir(&dir).is_ok_and(|mut d| d.next().is_none()) {
-        let _ = std::fs::remove_dir(&dir);
+    if !dry_run && !gone_marker(work_dir, tag).exists() {
+        remove_if_empty(&snaps_dir(work_dir, tag));
     }
+    Ok(())
+}
+
+/// Delete one snap through the fast path when the mount allows it (the
+/// read-only flag is cleared first), and log it with `reason`.
+fn delete_snap(snap: &Snap, tag: &str, reason: &str, dry_run: bool) -> Result<()> {
+    if dry_run {
+        println!("would delete {} ({reason})", snap.path.display());
+        return Ok(());
+    }
+    // Without user_subvol_rm_allowed this unlinks every file: as heavy
+    // as a lane delete, so one at a time and not under I/O pressure.
+    let lock = (!btrfs::rm_allowed(&snap.path))
+        .then(|| crate::machine_lock::acquire_paced("delete", tag))
+        .transpose()
+        .map_err(|e| anyhow!(e))?;
+    btrfs::delete_subvolume(&snap.path, &[]).map_err(|e| anyhow!("{e}"))?;
+    drop(lock);
+    println!("deleted {} ({reason})", snap.path.display());
     Ok(())
 }
 
