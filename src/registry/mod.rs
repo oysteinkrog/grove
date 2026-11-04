@@ -11,6 +11,12 @@ pub use project::Project;
 
 pub const MAX_SCHEMA_VERSION: u32 = 1;
 
+/// File in `<grove_dir>/snaps/<tag>/` that `grove snap` writes when it first
+/// finds the tag gone from the registry. Saving the registry with the tag in
+/// it removes the file, so a tag that comes back and goes again gets a fresh
+/// grace period before its snaps are deleted.
+pub const SNAP_GONE_MARKER: &str = ".gone-since";
+
 #[derive(Debug, Error)]
 pub enum RegistryError {
     #[error("tag already exists: {0}")]
@@ -73,7 +79,38 @@ impl Registry {
         let data = serde_json::to_string_pretty(self)?;
         fs::write(&tmp_path, &data)?;
         fs::rename(&tmp_path, &path)?;
+        self.clear_snap_gone_markers(grove_dir);
         Ok(())
+    }
+
+    /// Remove the snap gone-mark of every registered tag. A failure is a
+    /// warning: the registry is already saved.
+    fn clear_snap_gone_markers(&self, grove_dir: &Path) {
+        let snaps = grove_dir.join("snaps");
+        for tag in self.projects.keys() {
+            let marker = snaps.join(tag).join(SNAP_GONE_MARKER);
+            match fs::remove_file(&marker) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => {}
+                Err(e) => eprintln!("grove: warning: could not remove {}: {e}", marker.display()),
+            }
+        }
+    }
+
+    /// Like `load`, but a missing registry.json is an error rather than an
+    /// empty registry. For callers that delete what the registry does not
+    /// list.
+    pub fn load_strict(grove_dir: &Path) -> Result<Self, RegistryError> {
+        let data = fs::read_to_string(grove_dir.join("registry.json"))?;
+        let registry: Self = serde_json::from_str(&data)?;
+        if registry.schema_version > MAX_SCHEMA_VERSION {
+            return Err(RegistryError::SchemaTooNew {
+                found: registry.schema_version,
+                max: MAX_SCHEMA_VERSION,
+            });
+        }
+        Ok(registry)
     }
 
     pub fn insert(&mut self, tag: String, project: Project) -> Result<(), RegistryError> {

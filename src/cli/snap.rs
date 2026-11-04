@@ -48,7 +48,7 @@ pub const ORPHAN_GRACE_ENV: &str = "GROVE_SNAP_ORPHAN_GRACE_HOURS";
 const DEFAULT_ORPHAN_GRACE_HOURS: i64 = 24;
 
 /// File in a lane's snaps dir with the time a run first found the lane gone.
-const GONE_MARKER: &str = ".gone-since";
+use crate::registry::SNAP_GONE_MARKER as GONE_MARKER;
 
 fn orphan_grace() -> time::Duration {
     parse_grace(std::env::var(ORPHAN_GRACE_ENV).ok().as_deref())
@@ -138,15 +138,12 @@ pub fn run_at(args: &SnapArgs, cx: &RepoContext, now: OffsetDateTime) -> Result<
 /// missing file reads as an empty registry elsewhere in grove; here that
 /// would make every lane look gone, so it is an error.
 fn load_registry(grove_dir: &Path) -> Result<crate::registry::Registry> {
-    let path = grove_dir.join("registry.json");
-    if !path.is_file() {
-        bail!(
-            "no registry at {}; nothing snapped or deleted",
-            path.display()
-        );
-    }
-    crate::registry::Registry::load(grove_dir)
-        .map_err(|e| anyhow!("{e}; nothing snapped or deleted"))
+    crate::registry::Registry::load_strict(grove_dir).map_err(|e| {
+        anyhow!(
+            "registry {}: {e}; nothing snapped or deleted",
+            grove_dir.join("registry.json").display()
+        )
+    })
 }
 
 fn run_with_grace(
@@ -217,10 +214,33 @@ fn clear_gone_marker(work_dir: &Path, tag: &str, dry_run: bool) {
 }
 
 /// When a run first found `tag` gone, or `None` when no run has yet (or the
-/// marker cannot be read, which restarts the grace period).
+/// marker is not a regular file or cannot be read, which restarts the grace
+/// period).
 fn gone_since(work_dir: &Path, tag: &str) -> Option<OffsetDateTime> {
-    let text = std::fs::read_to_string(gone_marker(work_dir, tag)).ok()?;
+    let marker = gone_marker(work_dir, tag);
+    if !std::fs::symlink_metadata(&marker).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    let text = std::fs::read_to_string(marker).ok()?;
     OffsetDateTime::parse(text.trim(), &time::format_description::well_known::Rfc3339).ok()
+}
+
+/// Write the marker as a new file and rename it into place, so whatever is
+/// at the marker's path (a symlink, say) is replaced, never written through.
+fn write_gone_marker(work_dir: &Path, tag: &str, now: OffsetDateTime) -> Result<()> {
+    use std::io::Write;
+    let marker = gone_marker(work_dir, tag);
+    let tmp = snaps_dir(work_dir, tag).join(format!("{GONE_MARKER}.{}", std::process::id()));
+    let stamp = now.format(&time::format_description::well_known::Rfc3339)?;
+    let _ = std::fs::remove_file(&tmp);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)?;
+    file.write_all(format!("{stamp}\n").as_bytes())?;
+    drop(file);
+    std::fs::rename(&tmp, &marker)?;
+    Ok(())
 }
 
 /// Prune the snaps of a lane that is not in the registry. Within the grace
@@ -240,8 +260,7 @@ fn prune_gone(
             if dry_run {
                 println!("would mark {tag} gone since {}", fmt_time(now));
             } else {
-                let stamp = now.format(&time::format_description::well_known::Rfc3339)?;
-                std::fs::write(gone_marker(work_dir, tag), format!("{stamp}\n"))?;
+                write_gone_marker(work_dir, tag, now)?;
                 println!(
                     "lane {tag} is gone; its snaps are kept until {}",
                     fmt_time(now + grace)
@@ -253,20 +272,34 @@ fn prune_gone(
     if now - since < grace {
         return prune(work_dir, tag, now, true, dry_run);
     }
-    // Read the registry again just before deleting: a `grove new` may have
-    // taken the tag during this run, and a registry that cannot be read now
-    // deletes nothing.
-    let registry = load_registry(grove_dir)?;
-    if registry.projects.contains_key(tag) {
-        return Ok(());
-    }
     let reason = format!(
         "lane {tag} gone since {}, grace {} h passed",
         fmt_time(since),
         grace.whole_hours()
     );
     for snap in list_snaps(work_dir, tag) {
-        delete_snap(&snap, tag, &reason, dry_run)?;
+        if dry_run {
+            println!("would delete {} ({reason})", snap.path.display());
+            continue;
+        }
+        // The slow path's pacing lock first, then the registry lock that
+        // `grove new` takes to register a tag: the tag is checked again and
+        // the snap deleted while no one can register it. A registry that
+        // cannot be read now deletes nothing.
+        let paced = (!btrfs::rm_allowed(&snap.path))
+            .then(|| crate::machine_lock::acquire_paced("delete", tag))
+            .transpose()
+            .map_err(|e| anyhow!(e))?;
+        let lock = std::fs::File::create(grove_dir.join("registry.lock"))?;
+        lock.lock()?;
+        if load_registry(grove_dir)?.projects.contains_key(tag) {
+            clear_gone_marker(work_dir, tag, false);
+            return Ok(());
+        }
+        btrfs::delete_subvolume(&snap.path, &[]).map_err(|e| anyhow!("{e}"))?;
+        drop(lock);
+        drop(paced);
+        println!("deleted {} ({reason})", snap.path.display());
     }
     if !dry_run {
         let _ = std::fs::remove_file(gone_marker(work_dir, tag));

@@ -316,21 +316,31 @@ fn gone_lane_snaps_are_deleted_after_the_grace_period_only() {
     assert!(btrfs::subvol_info(&live_snap).unwrap().readonly);
     assert!(src.join("work.txt").exists(), "nothing outside snaps");
 
-    // A tag that comes back clears its mark, so its next exit gets a
-    // fresh grace period.
+    // A tag that comes back and goes again between two runs gets a fresh
+    // grace period: saving the registry with the tag clears its mark.
     let back = fake_snap(&work_dir, &src, "back", week_ago);
     run_with_grace(&args, &cx, hours(26), grace).unwrap();
     assert!(gone_marker(&work_dir, "back").is_file());
     Registry::insert_on_disk(&grove_dir, "back".into(), registered(&live_dir)).unwrap();
-    let cx = context(&main, &work_dir);
-    run_with_grace(&args, &cx, hours(27), grace).unwrap();
     assert!(!gone_marker(&work_dir, "back").exists());
     Registry::remove_on_disk_if(&grove_dir, "back", |_| true).unwrap();
     let cx = context(&main, &work_dir);
     run_with_grace(&args, &cx, hours(60), grace).unwrap();
     assert!(back.exists(), "fresh grace period after the tag left again");
-    run_with_grace(&args, &cx, hours(85), grace).unwrap();
+
+    // A marker that is a symlink is replaced, never written through.
+    let outside = work_dir.join("outside.txt");
+    std::fs::write(&outside, "not a time\n").unwrap();
+    std::fs::remove_file(gone_marker(&work_dir, "back")).unwrap();
+    std::os::unix::fs::symlink(&outside, gone_marker(&work_dir, "back")).unwrap();
+    run_with_grace(&args, &cx, hours(70), grace).unwrap();
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "not a time\n");
+    let marker = std::fs::symlink_metadata(gone_marker(&work_dir, "back")).unwrap();
+    assert!(marker.is_file(), "the symlink was replaced by a file");
+    assert!(back.exists(), "grace restarted at the replaced marker");
+    run_with_grace(&args, &cx, hours(95), grace).unwrap();
     assert!(!back.exists());
+    assert!(!snaps_dir(&work_dir, "back").exists());
 
     btrfs::delete_subvolume(&live_snap, &[]).unwrap();
     btrfs::delete_subvolume(&src, &[]).unwrap();
@@ -354,7 +364,10 @@ fn unreadable_or_missing_registry_deletes_nothing() {
     // Missing: elsewhere grove reads this as empty, which would make every
     // lane look gone.
     let err = run_with_grace(&args, &cx, late, grace).unwrap_err();
-    assert!(err.to_string().contains("no registry"), "{err}");
+    assert!(
+        err.to_string().contains("nothing snapped or deleted"),
+        "{err}"
+    );
     std::fs::write(grove_dir.join("registry.json"), "{ not json").unwrap();
     assert!(run_with_grace(&args, &cx, late, grace).is_err());
     assert!(snap.is_dir());
